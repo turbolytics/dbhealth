@@ -22,6 +22,11 @@ KIND ?= postgres
 test-integration:
 	go test -race -count=1 ./internal/$(KIND)/
 
+# Against a real Postgres and a local control; see test/e2e/e2e_test.go
+# for the DBHEALTH_E2E_* variables it needs.
+test-e2e:
+	DBHEALTH_E2E=1 go test -count=1 -v ./test/e2e/
+
 fmt-check:
 	@test -z "$$(gofmt -l cmd internal $(wildcard test))" || { echo "gofmt these:"; gofmt -l cmd internal $(wildcard test); exit 1; }
 
