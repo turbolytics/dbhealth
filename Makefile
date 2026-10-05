@@ -1,4 +1,4 @@
-.PHONY: build test test-short
+.PHONY: build test test-short test-integration test-e2e fmt-check vet image release-test
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
