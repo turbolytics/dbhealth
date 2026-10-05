@@ -22,7 +22,15 @@ import (
 	"github.com/turbolytics/sql-flow/turbostats/wire"
 
 	"github.com/turbolytics/dbhealth/internal/config"
+	"github.com/turbolytics/dbhealth/internal/source"
 )
+
+// The collector asks a Client these questions.
+var _ source.Source = (*Client)(nil)
+
+// ErrPartial is source.ErrPartial: Table returned a row worth sending
+// beside its error.
+var ErrPartial = source.ErrPartial
 
 // Client is a pool of two connections to one endpoint: one for the probe,
 // one for everything else, so a slow count(*) never delays the probe.
@@ -122,8 +130,10 @@ func classify(err error) string {
 // Version is the server's version string, "18.1".
 func (c *Client) Version(ctx context.Context) (string, error) {
 	var v string
-	err := c.row(ctx, "SHOW server_version", nil, &v)
-	return v, err
+	if err := c.row(ctx, "SHOW server_version", nil, &v); err != nil {
+		return "", errors.New("server_version: " + sqlError(err))
+	}
+	return v, nil
 }
 
 // Resources is how close the endpoint is to its limits. Each of the four
@@ -143,9 +153,18 @@ func (c *Client) Resources(ctx context.Context) (*wire.DatabaseResources, []wire
 		count(*) FILTER (WHERE wait_event_type = 'Lock'),
 		count(*) FILTER (WHERE backend_type IS NULL AND datname IS NOT NULL AND pid <> pg_backend_pid())
 		FROM pg_stat_activity`, nil, &used, &max, &waiting, &hidden)
-	if err != nil {
+	switch {
+	case err != nil:
 		fail("pg_stat_activity", err)
-	} else {
+	case hidden > 0:
+		// Another role's sessions show as rows with their type, state,
+		// wait event and transaction start as NULL. A count of what this
+		// role can see would be a small number passed off as true, so
+		// connections and the oldest transaction are withheld and the
+		// error says what to grant.
+		errs = append(errs, wire.DatabaseError{Error: fmt.Sprintf(
+			"pg_stat_activity: %d other sessions hidden from this role; grant pg_read_all_stats", hidden)})
+	default:
 		r.Connections = &wire.DatabaseConnections{Used: used, Max: max, Waiting: waiting}
 	}
 
@@ -157,19 +176,13 @@ func (c *Client) Resources(ctx context.Context) (*wire.DatabaseResources, []wire
 	}
 
 	var oldest int64
-	if err := c.row(ctx, `SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(xact_start))::bigint, 0)
-		FROM pg_stat_activity WHERE xact_start IS NOT NULL AND backend_type = 'client backend'`, nil, &oldest); err != nil {
-		fail("pg_stat_activity.xact_start", err)
-	} else if hidden > 0 {
-		// Another role's sessions show as rows with their type, state,
-		// wait event and transaction start as NULL. They are not in the
-		// count above, and whether one holds a transaction is not
-		// knowable, so the age is withheld and the error says what to
-		// grant.
-		errs = append(errs, wire.DatabaseError{Error: fmt.Sprintf(
-			"pg_stat_activity: %d other sessions hidden from this role and not counted; grant pg_read_all_stats", hidden)})
-	} else {
-		r.OldestTransactionSeconds = &oldest
+	if hidden == 0 {
+		if err := c.row(ctx, `SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(xact_start))::bigint, 0)
+			FROM pg_stat_activity WHERE xact_start IS NOT NULL AND backend_type = 'client backend'`, nil, &oldest); err != nil {
+			fail("pg_stat_activity.xact_start", err)
+		} else {
+			r.OldestTransactionSeconds = &oldest
+		}
 	}
 
 	var shared int64
@@ -214,7 +227,7 @@ func (c *Client) Discover(ctx context.Context, d config.Discover) ([]config.Stat
 		var schema, table string
 		var col *string
 		if err := rows.Scan(&schema, &table, &col); err != nil {
-			return nil, 0, err
+			return nil, 0, errors.New("discovery: " + sqlError(err))
 		}
 		if excluded(table, d.Exclude) {
 			continue
@@ -279,7 +292,8 @@ func (c *Client) Table(ctx context.Context, t config.StaticTable, fresh, exact b
 		var newest *time.Time
 		col := pgx.Identifier{t.FreshnessColumn}.Sanitize()
 		if err := c.row(ctx, `SELECT max(`+col+`) FROM `+ident, nil, &newest); err != nil {
-			return out, fmt.Errorf("%s: max(%s): %s", name, t.FreshnessColumn, sqlError(err))
+			out.CheckedAt = time.Now().UTC()
+			return out, fmt.Errorf("%w: %s: max(%s): %s", ErrPartial, name, t.FreshnessColumn, sqlError(err))
 		}
 		if newest != nil {
 			n := newest.UTC()
@@ -289,7 +303,8 @@ func (c *Client) Table(ctx context.Context, t config.StaticTable, fresh, exact b
 	if exact {
 		var n int64
 		if err := c.row(ctx, `SELECT count(*) FROM `+ident, nil, &n); err != nil {
-			return out, fmt.Errorf("%s: count(*): %s", name, sqlError(err))
+			out.CheckedAt = time.Now().UTC()
+			return out, fmt.Errorf("%w: %s: count(*): %s", ErrPartial, name, sqlError(err))
 		}
 		out.Rows = &n
 		out.RowsExact = true
@@ -339,12 +354,11 @@ func (c *Client) Replication(ctx context.Context) (*wire.DatabaseReplication, er
 	defer rows.Close()
 	var replicas []wire.DatabaseReplica
 	for rows.Next() {
-		var name, state string
-		var lag *float64
-		if err := rows.Scan(&name, &state, &lag); err != nil {
-			return nil, err
+		rep, err := scanReplica(rows)
+		if err != nil {
+			return nil, errors.New("pg_stat_replication: " + sqlError(err))
 		}
-		replicas = append(replicas, wire.DatabaseReplica{Name: name, State: state, LagSeconds: lag})
+		replicas = append(replicas, rep)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, errors.New("pg_stat_replication: " + sqlError(err))
@@ -356,6 +370,24 @@ func (c *Client) Replication(ctx context.Context) (*wire.DatabaseReplication, er
 		replicas = replicas[:wire.MaxDatabaseReplicas]
 	}
 	return &wire.DatabaseReplication{Role: "primary", Replicas: replicas}, nil
+}
+
+// scanReplica reads one pg_stat_replication row. A role without
+// pg_read_all_stats sees state and lag as NULL.
+func scanReplica(row pgx.Row) (wire.DatabaseReplica, error) {
+	var name, state *string
+	var lag *float64
+	if err := row.Scan(&name, &state, &lag); err != nil {
+		return wire.DatabaseReplica{}, err
+	}
+	rep := wire.DatabaseReplica{LagSeconds: lag}
+	if name != nil {
+		rep.Name = *name
+	}
+	if state != nil {
+		rep.State = *state
+	}
+	return rep, nil
 }
 
 // sqlError is the server's message for a failed query, or the class of a

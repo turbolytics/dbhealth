@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -166,9 +167,10 @@ func TestResources_AllFields(t *testing.T) {
 
 // The review-focus case: a role without pg_read_all_stats sees other
 // sessions' rows in pg_stat_activity with their type, state, wait event
-// and transaction start hidden. Used counts only what it can see, the
-// oldest-transaction age is withheld, and the error says how many are
-// hidden and what to grant, rather than a small number passed off as true.
+// and transaction start hidden. A count of what it can see would be a
+// small number passed off as true, so connections and the oldest
+// transaction are withheld and the error says how many sessions are
+// hidden and what to grant. Size and memory still come back.
 func TestResources_ReaderRoleIsToldWhatIsHidden(t *testing.T) {
 	admin := open(t, adminDSN)
 	// Another session, held open in a transaction, that the reader cannot see into.
@@ -180,9 +182,9 @@ func TestResources_ReaderRoleIsToldWhatIsHidden(t *testing.T) {
 
 	c := open(t, readerDSN)
 	r, errs := c.Resources(context.Background())
-	assert.NotNil(t, r.Connections)
-	assert.That(t, r.Connections.Used >= 1)
+	assert.Nil(t, r.Connections)
 	assert.Nil(t, r.OldestTransactionSeconds)
+	assert.NotNil(t, r.SizeBytes)
 	assert.Equal(t, 1, len(errs))
 	assert.Equal(t, "", errs[0].Table)
 	assert.That(t, strings.Contains(errs[0].Error, "pg_stat_activity"))
@@ -312,4 +314,45 @@ func TestQueries_CountEveryRoundTrip(t *testing.T) {
 	assert.Equal(t, before+1, c.Queries())
 	c.Resources(context.Background())
 	assert.Equal(t, before+5, c.Queries())
+}
+
+// Findings from the review of #4.
+
+func TestVersion_ErrorNamesNoHostOrUser(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs the postgres container")
+	}
+	c, err := Open(context.Background(), "postgres://secretuser:hunter2@127.0.0.1:1/mydb?sslmode=disable", time.Second)
+	assert.NoError(t, err)
+	defer c.Close()
+	_, err = c.Version(context.Background())
+	assert.Error(t, err)
+	for _, leak := range []string{"secretuser", "hunter2", "mydb", "127.0.0.1"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("the error carries %q: %q", leak, err)
+		}
+	}
+}
+
+func TestTable_ABrokenFreshnessColumnStillReportsTheTable(t *testing.T) {
+	c := open(t, adminDSN)
+	row, err := c.Table(context.Background(), config.StaticTable{Name: "public.events", FreshnessColumn: "nope"}, true, false)
+	assert.True(t, errors.Is(err, ErrPartial))
+	assert.That(t, strings.Contains(err.Error(), "nope"))
+	assert.Equal(t, "public.events", row.Name)
+	assert.That(t, row.SizeBytes > 0)
+	assert.NotNil(t, row.Rows)
+	assert.Nil(t, row.NewestAt)
+}
+
+func TestReplication_StateColumnMayBeNull(t *testing.T) {
+	// A role without pg_read_all_stats sees pg_stat_replication rows with
+	// state and lag NULL. The scan must take them.
+	c := open(t, adminDSN)
+	row := c.pool.QueryRow(context.Background(), `SELECT 'r1'::text, NULL::text, NULL::float8`)
+	r, err := scanReplica(row)
+	assert.NoError(t, err)
+	assert.Equal(t, "r1", r.Name)
+	assert.Equal(t, "", r.State)
+	assert.Nil(t, r.LagSeconds)
 }

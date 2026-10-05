@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/zeebo/assert"
 
 	"github.com/turbolytics/dbhealth/internal/config"
+	"github.com/turbolytics/dbhealth/internal/postgres"
 )
 
 // fake is a source that answers from fields and counts what was asked.
@@ -19,6 +21,8 @@ type fake struct {
 	probeOK    bool
 	tables     []config.StaticTable
 	tableErr   map[string]error
+	partial    map[string]error // Table returns the row and this, wrapped in postgres.ErrPartial
+	dropped    int
 	queries    int
 	discovers  int
 	exacts     map[string]int
@@ -28,7 +32,7 @@ type fake struct {
 }
 
 func newFake(now func() time.Time) *fake {
-	return &fake{probeOK: true, tableErr: map[string]error{}, exacts: map[string]int{}, freshes: map[string]int{}, now: now}
+	return &fake{probeOK: true, tableErr: map[string]error{}, partial: map[string]error{}, exacts: map[string]int{}, freshes: map[string]int{}, now: now}
 }
 
 func (f *fake) Probe(ctx context.Context, timeout time.Duration) wire.DatabaseProbe {
@@ -54,7 +58,7 @@ func (f *fake) Resources(ctx context.Context) (*wire.DatabaseResources, []wire.D
 func (f *fake) Discover(ctx context.Context, d config.Discover) ([]config.StaticTable, int, error) {
 	f.queries++
 	f.discovers++
-	return f.tables, 0, nil
+	return f.tables, f.dropped, nil
 }
 
 func (f *fake) Table(ctx context.Context, t config.StaticTable, fresh, exact bool) (wire.DatabaseTable, error) {
@@ -71,7 +75,12 @@ func (f *fake) Table(ctx context.Context, t config.StaticTable, fresh, exact boo
 		return wire.DatabaseTable{}, err
 	}
 	rows := int64(100 + f.exacts[t.Name])
-	out := wire.DatabaseTable{Name: t.Name, FreshnessColumn: t.FreshnessColumn, Rows: &rows, RowsExact: exact, SizeBytes: 4096, CheckedAt: f.now()}
+	// CheckedAt is the source's own clock after the query, 300ms late, as
+	// a real query's is; the collector must schedule on its own reading.
+	out := wire.DatabaseTable{Name: t.Name, FreshnessColumn: t.FreshnessColumn, Rows: &rows, RowsExact: exact, SizeBytes: 4096, CheckedAt: f.now().Add(300 * time.Millisecond)}
+	if err := f.partial[t.Name]; err != nil {
+		return out, fmt.Errorf("%w: %w", postgres.ErrPartial, err)
+	}
 	if fresh && t.FreshnessColumn != "" {
 		at := f.now()
 		out.NewestAt = &at
@@ -306,4 +315,74 @@ func TestCollect_ErrorsAreNeverNilInJSON(t *testing.T) {
 	raw, err := json.Marshal(d)
 	assert.NoError(t, err)
 	assert.That(t, strings.Contains(string(raw), `"errors":[]`))
+}
+
+// Findings from the review of #4.
+
+func TestCollect_AJitteredTickStillRunsTheCheck(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	c := New(database(), static("estimate", "public.t"), probe(), f, ck.now)
+	c.Collect(context.Background())
+	assert.Equal(t, 1, f.freshes["public.t"])
+	// The reporter jitters the interval by up to ten percent; a tick 58s
+	// after the last is still this interval's freshness check.
+	ck.advance(58 * time.Second)
+	c.Collect(context.Background())
+	assert.Equal(t, 2, f.freshes["public.t"])
+}
+
+func TestCollect_ExactCountsDoNotDrift(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	c := New(database(), static("exact", "public.t"), probe(), f, ck.now)
+	// The clock the collector schedules on is the one it reads at the
+	// start of the interval, not when the table's query returns.
+	for i := 0; i < 61; i++ {
+		c.Collect(context.Background())
+		ck.advance(time.Minute)
+	}
+	// t=0 and t=3600: exactly two, not one at 0 and one late.
+	assert.Equal(t, 2, f.exacts["public.t"])
+}
+
+func TestCollect_APartialTableIsReportedWithItsError(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	f.partial["public.t"] = errors.New(`public.t: max(nope): column "nope" does not exist`)
+	c := New(database(), static("estimate", "public.t"), probe(), f, ck.now)
+	d := c.Collect(context.Background())
+	assert.Equal(t, 1, len(d.Tables))
+	assert.Nil(t, d.Tables[0].NewestAt)
+	assert.Equal(t, 1, len(d.Collection.Errors))
+	assert.Equal(t, "public.t", d.Collection.Errors[0].Table)
+}
+
+func TestCollect_TablesBeyondTheCapAreAnError(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	f.tables = []config.StaticTable{{Name: "public.a"}}
+	f.dropped = 150
+	tables := config.Tables{Rows: "estimate", FreshnessIntervalSeconds: 60, RowsExactIntervalSeconds: 3600,
+		Discover: &config.Discover{Schemas: []string{"public"}, FreshnessColumns: config.DefaultFreshnessColumns, MaxTables: 50}}
+	c := New(database(), tables, probe(), f, ck.now)
+	d := c.Collect(context.Background())
+	assert.Equal(t, 1, len(d.Collection.Errors))
+	assert.That(t, strings.Contains(d.Collection.Errors[0].Error, "150"))
+	assert.That(t, strings.Contains(d.Collection.Errors[0].Error, "max_tables"))
+}
+
+func TestCollect_ForgetsATableDiscoveryStopsReturning(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	f.tables = []config.StaticTable{{Name: "public.a"}, {Name: "public.b"}}
+	tables := config.Tables{Rows: "estimate", FreshnessIntervalSeconds: 60, RowsExactIntervalSeconds: 3600,
+		Discover: &config.Discover{Schemas: []string{"public"}, FreshnessColumns: config.DefaultFreshnessColumns, MaxTables: 50}}
+	c := New(database(), tables, probe(), f, ck.now)
+	c.Collect(context.Background())
+	assert.Equal(t, 2, len(c.last))
+	f.tables = f.tables[:1]
+	ck.advance(10 * time.Minute)
+	c.Collect(context.Background())
+	assert.Equal(t, 1, len(c.last))
 }

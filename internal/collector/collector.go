@@ -6,24 +6,18 @@ package collector
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/turbolytics/sql-flow/turbostats/wire"
 
 	"github.com/turbolytics/dbhealth/internal/config"
+	"github.com/turbolytics/dbhealth/internal/source"
 )
 
 // Source is what the collector asks. *postgres.Client is one.
-type Source interface {
-	Probe(ctx context.Context, timeout time.Duration) wire.DatabaseProbe
-	Version(ctx context.Context) (string, error)
-	Resources(ctx context.Context) (*wire.DatabaseResources, []wire.DatabaseError)
-	Discover(ctx context.Context, d config.Discover) ([]config.StaticTable, int, error)
-	Table(ctx context.Context, t config.StaticTable, fresh, exact bool) (wire.DatabaseTable, error)
-	Replication(ctx context.Context) (*wire.DatabaseReplication, error)
-	// Queries is the source's running count of round trips.
-	Queries() int
-}
+type Source = source.Source
 
 // rediscoverEvery is how many freshness intervals pass between one
 // discovery and the next.
@@ -43,6 +37,7 @@ type Collector struct {
 	version    string
 	discovered []config.StaticTable
 	discoverAt time.Time
+	dropped    int
 	last       map[string]*tableState
 	failures   int
 	lastOKAt   *time.Time
@@ -67,9 +62,11 @@ func New(db config.Database, tables config.Tables, probe config.Probe, src Sourc
 	return &Collector{db: db, tables: tables, probe: probe, src: src, now: now, target: target, last: map[string]*tableState{}}
 }
 
-// Collect is one interval.
+// Collect is one interval. Everything it schedules is against the clock
+// read here, once, so a slow query cannot drift the next check.
 func (c *Collector) Collect(ctx context.Context) wire.Database {
 	start := time.Now()
+	now := c.now()
 	queries := c.src.Queries()
 	d := wire.Database{
 		Kind:          c.db.Kind,
@@ -88,7 +85,7 @@ func (c *Collector) Collect(ctx context.Context) wire.Database {
 	d.Probe.ConsecutiveFailures = c.failures
 	d.Probe.LastOKAt = c.lastOKAt
 	if d.Probe.OK {
-		c.collectFacts(ctx, &d)
+		c.collectFacts(ctx, now, &d)
 	}
 	d.Collection.Queries = c.src.Queries() - queries
 	d.Collection.DurationMs = time.Since(start).Milliseconds()
@@ -98,7 +95,7 @@ func (c *Collector) Collect(ctx context.Context) wire.Database {
 	return d
 }
 
-func (c *Collector) collectFacts(ctx context.Context, d *wire.Database) {
+func (c *Collector) collectFacts(ctx context.Context, now time.Time, d *wire.Database) {
 	fail := func(table string, err error) {
 		d.Collection.Errors = append(d.Collection.Errors, wire.DatabaseError{Table: table, Error: err.Error()})
 	}
@@ -122,8 +119,10 @@ func (c *Collector) collectFacts(ctx context.Context, d *wire.Database) {
 	}
 	d.Replication = rep
 
-	now := c.now()
-	for _, t := range c.watched(ctx, now, fail) {
+	watched := c.watched(ctx, now, fail)
+	seen := make(map[string]bool, len(watched))
+	for _, t := range watched {
+		seen[t.Name] = true
 		st := c.last[t.Name]
 		if st == nil {
 			st = &tableState{}
@@ -133,28 +132,43 @@ func (c *Collector) collectFacts(ctx context.Context, d *wire.Database) {
 		if t.Rows != "" {
 			exact = t.Rows == "exact"
 		}
-		fresh := t.FreshnessColumn != "" && due(st.freshAt, now, c.tables.FreshnessIntervalSeconds)
-		exactNow := exact && due(st.exactAt, now, c.tables.RowsExactIntervalSeconds)
+		fresh := t.FreshnessColumn != "" && c.due(st.freshAt, now, c.tables.FreshnessIntervalSeconds)
+		exactNow := exact && c.due(st.exactAt, now, c.tables.RowsExactIntervalSeconds)
 		row, err := c.src.Table(ctx, t, fresh, exactNow)
 		if err != nil {
 			fail(t.Name, err)
-			continue
+			if !errors.Is(err, source.ErrPartial) {
+				continue
+			}
 		}
+		row.CheckedAt = now
+		// A check that was attempted is a check that was due, whatever it
+		// returned: a broken column is retried on its interval, not every
+		// probe.
 		if fresh {
 			st.newestAt, st.freshAt = row.NewestAt, now
 		} else {
 			row.NewestAt = st.newestAt
 		}
-		if exactNow {
-			st.exactRows, st.exactAt = row.Rows, row.CheckedAt
-		} else if exact && st.exactRows != nil {
+		if exactNow && row.RowsExact {
+			st.exactRows, st.exactAt = row.Rows, now
+		} else if exactNow {
+			st.exactAt = now
+		}
+		if exact && !row.RowsExact && st.exactRows != nil {
 			// Between exact counts the bundle carries the last one, with
 			// the time it was taken, rather than an estimate.
 			row.Rows, row.RowsExact, row.CheckedAt = st.exactRows, true, st.exactAt
 		}
 		d.Tables = append(d.Tables, row)
 	}
+	for name := range c.last {
+		if !seen[name] {
+			delete(c.last, name)
+		}
+	}
 	if len(d.Tables) > wire.MaxDatabaseTables {
+		fail("", fmt.Errorf("%d tables beyond the %d the bundle carries were not sent", len(d.Tables)-wire.MaxDatabaseTables, wire.MaxDatabaseTables))
 		d.Tables = d.Tables[:wire.MaxDatabaseTables]
 	}
 }
@@ -165,19 +179,28 @@ func (c *Collector) watched(ctx context.Context, now time.Time, fail func(string
 	if c.tables.Discover == nil {
 		return c.tables.Static
 	}
-	if due(c.discoverAt, now, rediscoverEvery*c.tables.FreshnessIntervalSeconds) {
-		found, _, err := c.src.Discover(ctx, *c.tables.Discover)
+	if c.due(c.discoverAt, now, rediscoverEvery*c.tables.FreshnessIntervalSeconds) {
+		found, dropped, err := c.src.Discover(ctx, *c.tables.Discover)
 		if err != nil {
 			fail("", err)
 		} else {
-			c.discovered, c.discoverAt = found, now
+			c.discovered, c.discoverAt, c.dropped = found, now, dropped
 		}
+	}
+	if c.dropped > 0 {
+		fail("", fmt.Errorf("discovery: %d tables beyond max_tables (%d) are not watched", c.dropped, c.tables.Discover.MaxTables))
 	}
 	return c.discovered
 }
 
 // due says whether a check last made at last is owed at now, on an
-// interval of seconds. A zero last is owed.
-func due(last, now time.Time, seconds int) bool {
-	return last.IsZero() || !now.Before(last.Add(time.Duration(seconds)*time.Second))
+// interval of seconds. A zero last is owed. The reporter jitters its
+// interval by up to ten percent, so a check is owed from half a probe
+// interval early: at 60s intervals, a tick at 58s is this minute's.
+func (c *Collector) due(last, now time.Time, seconds int) bool {
+	if last.IsZero() {
+		return true
+	}
+	slack := time.Duration(c.probe.IntervalSeconds) * time.Second / 2
+	return !now.Before(last.Add(time.Duration(seconds)*time.Second - slack))
 }
