@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -309,4 +310,14 @@ func TestConfig_ExactIntervalDefaultFollowsALongProbe(t *testing.T) {
 	f, err := Load(write(t, minimal+"probe:\n  interval_seconds: 7200\n"))
 	assert.NoError(t, err)
 	assert.Equal(t, 7200, f.Tables.RowsExactIntervalSeconds)
+}
+
+func TestConfig_MaxTablesIsBoundedByTheBundle(t *testing.T) {
+	contains(t, loadErr(t, minimal+"tables:\n  discover:\n    max_tables: 51\n"), "max_tables", "50")
+	var static strings.Builder
+	static.WriteString(minimal + "tables:\n  static:\n")
+	for i := 0; i < 51; i++ {
+		fmt.Fprintf(&static, "    - name: public.t%d\n", i)
+	}
+	contains(t, loadErr(t, static.String()), "static", "50")
 }

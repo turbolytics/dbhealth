@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"gopkg.in/yaml.v3"
 )
 
@@ -302,6 +303,12 @@ func (f *File) validate() error {
 	t := f.Tables
 	if t.Discover != nil && len(t.Static) > 0 {
 		return errors.New("tables: discover and static are exclusive; set one")
+	}
+	if len(t.Static) > wire.MaxDatabaseTables {
+		return fmt.Errorf("tables.static: %d tables; a bundle carries at most %d", len(t.Static), wire.MaxDatabaseTables)
+	}
+	if t.Discover != nil && t.Discover.MaxTables > wire.MaxDatabaseTables {
+		return fmt.Errorf("tables.discover.max_tables: %d; a bundle carries at most %d", t.Discover.MaxTables, wire.MaxDatabaseTables)
 	}
 	if t.Rows != "estimate" && t.Rows != "exact" {
 		return fmt.Errorf("tables.rows: %q; must be estimate or exact", t.Rows)
