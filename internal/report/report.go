@@ -6,6 +6,7 @@ package report
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	crand "crypto/rand"
@@ -45,8 +46,12 @@ const jitterFraction = 0.1
 
 // Instance is one database the reporter sends for.
 type Instance struct {
-	// Name is the instance name control shows; the id is dbhealth-<name>.
+	// Name is the endpoint's name; the id is dbhealth-<name>.
 	Name string
+	// Cluster is what control groups endpoints by: instance.name and
+	// database.cluster, which control requires to be equal. Empty is the
+	// endpoint's own name.
+	Cluster string
 	// Collect is the collector's interval. Its context ends with the
 	// interval: a database that answers nothing cannot hold the next one.
 	Collect func(context.Context) wire.Database
@@ -251,11 +256,14 @@ func (r *Reporter) post(ctx context.Context, inst Instance, exit *wire.Exit) {
 }
 
 // bundle is the document for one instance: the shared envelope and the
-// database section. Pipeline and Serve stay nil; control reads the kind
-// from the sections present.
+// database section. Pipeline and Serve stay nil, and the kind says so:
+// control refuses a database section without it.
 func (r *Reporter) bundle(inst Instance, d *wire.Database, exit *wire.Exit) wire.Bundle {
 	now := r.now().UTC()
 	uptime := int64(now.Sub(r.startedAt).Seconds())
+	// The reporter sets both, so they cannot disagree.
+	cluster := cmp.Or(inst.Cluster, inst.Name)
+	d.Cluster = cluster
 	b := wire.Bundle{
 		V:               wire.Version,
 		SentAt:          now,
@@ -263,7 +271,8 @@ func (r *Reporter) bundle(inst Instance, d *wire.Database, exit *wire.Exit) wire
 		LastActivityAt:  d.Probe.LastOKAt,
 		Instance: wire.Instance{
 			ID:         "dbhealth-" + inst.Name,
-			Name:       inst.Name,
+			Name:       cluster,
+			Kind:       wire.KindDatabase,
 			Version:    r.version,
 			Commit:     Commit,
 			Arch:       runtime.GOOS + "/" + runtime.GOARCH,

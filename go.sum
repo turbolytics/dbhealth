@@ -113,8 +113,8 @@ github.com/tklauser/go-sysconf v0.4.0 h1:7H0uAN+7RkwWRaxhYXDLqa5V3LPrJeV8wmD9dRU
 github.com/tklauser/go-sysconf v0.4.0/go.mod h1:8mTNWyog7H+MpKijp4VmKJAd2bbYQ2zuUwkYRbUArPI=
 github.com/tklauser/numcpus v0.12.0 h1:NR85qdvHA9pFse3x3weVZ0r0ST8R6l5RHbZrlRaqob4=
 github.com/tklauser/numcpus v0.12.0/go.mod h1:ABHeXzJnr/qqwguhClkZKT1/8VABcYrsyUiUGobwWJg=
-github.com/turbolytics/sql-flow v1.2.1-0.20261005095830-779c9baf81e1 h1:jLy8KDpbTAfH1JnvgeIpyV7/9cO/4pJlPM+e/whtwHk=
-github.com/turbolytics/sql-flow v1.2.1-0.20261005095830-779c9baf81e1/go.mod h1:Vb8r0qyU5K0ExiVBrqfNyxaC0zdkUKgTgT4nBoZ5amI=
+github.com/turbolytics/sql-flow v1.2.1-0.20261005200501-6e83acd5000c h1:/SSxKYeX70aKW5LdgB9Tzf/tWpcBrlVKm9wdmDRw9S0=
+github.com/turbolytics/sql-flow v1.2.1-0.20261005200501-6e83acd5000c/go.mod h1:Vb8r0qyU5K0ExiVBrqfNyxaC0zdkUKgTgT4nBoZ5amI=
 github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=
 github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
 github.com/zeebo/assert v1.3.1 h1:vukIABvugfNMZMQO1ABsyQDJDTVQbn+LWSMy1ol1h6A=

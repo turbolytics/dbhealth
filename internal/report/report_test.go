@@ -122,16 +122,20 @@ func fixedNow() time.Time { return okAt.Add(5 * time.Second) }
 func TestReport_BundleShape(t *testing.T) {
 	cred, priv := credential(t)
 	c := newControl(t, priv)
-	r, _ := newReporter(t, c, cred, fixedNow, Instance{Name: "billing-primary", Collect: database(okAt)})
+	r, _ := newReporter(t, c, cred, fixedNow, Instance{Name: "billing-primary", Cluster: "billing", Collect: database(okAt)})
 	r.Once(context.Background())
 	posts := c.posts()
 	assert.Equal(t, 1, len(posts))
 	b := posts[0]
 	assert.Equal(t, wire.Version, b.V)
+	// Control files the report by its kind, and groups endpoints by
+	// instance.name, which must equal database.cluster.
+	assert.Equal(t, wire.KindDatabase, b.Instance.Kind)
+	assert.Equal(t, "billing", b.Instance.Name)
+	assert.Equal(t, "billing", b.Database.Cluster)
 	assert.Equal(t, 60, b.IntervalSeconds)
 	assert.True(t, b.SentAt.Equal(fixedNow()))
 	assert.Equal(t, "dbhealth-billing-primary", b.Instance.ID)
-	assert.Equal(t, "billing-primary", b.Instance.Name)
 	assert.Equal(t, "v0.1.0-test", b.Instance.Version)
 	assert.Equal(t, "sha256:abc", b.Instance.ConfigHash)
 	assert.Equal(t, "dbhealth", b.Instance.Runtime)
@@ -439,4 +443,17 @@ func TestStatsD_GaugesArePlainAndNeverNegative(t *testing.T) {
 	}
 	assert.Equal(t, "dbhealth.replication.lag_seconds:0.000012|g|#db:db", lag)
 	assert.Equal(t, "dbhealth.replication.replica.lag_seconds:0|g|#db:db,replica:r1", replica)
+}
+
+// An endpoint with no cluster is its own: its name is the cluster, in
+// instance.name and in database.cluster, whatever the collector sent.
+func TestReport_NoClusterIsItsOwn(t *testing.T) {
+	cred, priv := credential(t)
+	c := newControl(t, priv)
+	r, _ := newReporter(t, c, cred, fixedNow, Instance{Name: "orders-pg", Collect: database(okAt)})
+	r.Once(context.Background())
+	b := c.posts()[0]
+	assert.Equal(t, "dbhealth-orders-pg", b.Instance.ID)
+	assert.Equal(t, "orders-pg", b.Instance.Name)
+	assert.Equal(t, "orders-pg", b.Database.Cluster)
 }
