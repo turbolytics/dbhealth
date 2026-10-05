@@ -213,3 +213,100 @@ func TestRedactedTarget_ErrorNeverCarriesTheDSN(t *testing.T) {
 		t.Fatalf("the error carries the password: %q", err)
 	}
 }
+
+// Findings from the review of #2.
+
+func TestRedactedTarget_AnUnescapedPasswordIsRefused(t *testing.T) {
+	for _, dsn := range []string{"postgres://u:12/ss@h/d", "postgres://u:123#x@h/d"} {
+		got, err := RedactedTarget(dsn)
+		if err == nil {
+			t.Fatalf("%q was accepted as %q; part of the password is in it", dsn, got)
+		}
+		contains(t, err.Error(), "escape")
+		if strings.Contains(err.Error(), "12") {
+			t.Fatalf("the error carries the password: %q", err)
+		}
+	}
+}
+
+func TestRedactedTarget_SchemeMustBePostgres(t *testing.T) {
+	_, err := RedactedTarget("mysql://h/d")
+	assert.Error(t, err)
+	contains(t, err.Error(), "mysql")
+}
+
+func TestRedactedTarget_IPv6HostKeepsItsBrackets(t *testing.T) {
+	got, err := RedactedTarget("postgres://u:p@[::1]:5432/d")
+	assert.NoError(t, err)
+	assert.Equal(t, "[::1]:5432/d", got)
+}
+
+func TestRedactedTarget_KeyValueWithASchemeInsideAValue(t *testing.T) {
+	got, err := RedactedTarget("host=h password=a://b dbname=d")
+	assert.NoError(t, err)
+	assert.Equal(t, "h:5432/d", got)
+}
+
+func TestConfig_YamlErrorsDoNotQuoteTheValue(t *testing.T) {
+	err := loadErr(t, minimal+"probe:\n  interval_seconds: s3cr3t\n")
+	if strings.Contains(err, "s3cr3t") {
+		t.Fatalf("the error carries the value: %q", err)
+	}
+	contains(t, err, "line 8")
+}
+
+func TestConfig_EnvValueIsNotParsedAsYaml(t *testing.T) {
+	t.Setenv("X", `host=h dbname=d password=a\nb"c`)
+	body := strings.Replace(minimal, "dsn: postgres://u@h:5432/d", `dsn: "{{ X }}"`, 1)
+	f, err := Load(write(t, body))
+	assert.NoError(t, err)
+	assert.Equal(t, `host=h dbname=d password=a\nb"c`, f.Databases[0].DSN)
+}
+
+func TestConfig_UnsetEnvInACommentIsFine(t *testing.T) {
+	os.Unsetenv("NOPE")
+	_, err := Load(write(t, minimal+"# {{ NOPE }} is a comment\n"))
+	assert.NoError(t, err)
+}
+
+func TestConfig_UnknownKeyErrorNamesTheFileLine(t *testing.T) {
+	body := minimal + "tables:\n  static:\n    - name: public.t\n      fresh: x\n"
+	contains(t, loadErr(t, body), "line 10", "fresh")
+}
+
+func TestConfig_AnchorsWork(t *testing.T) {
+	body := `
+defaults: &d
+  interval_seconds: 30
+databases:
+  - kind: postgres
+    dsn: postgres://u@h:5432/d
+probe: *d
+report:
+  statsd: localhost:8125
+`
+	_, err := Load(write(t, body))
+	// `defaults` is an unknown top-level key; the anchor itself must not
+	// be what fails.
+	contains(t, err.Error(), "defaults")
+	body = strings.Replace(body, "defaults: &d\n  interval_seconds: 30\n", "", 1)
+	body = strings.Replace(body, "probe: *d", "probe: &d\n  interval_seconds: 30\ntables:\n  freshness_interval_seconds: 30", 1)
+	f, err := Load(write(t, body))
+	assert.NoError(t, err)
+	assert.Equal(t, 30, f.Probe.IntervalSeconds)
+}
+
+func TestConfig_DuplicateStaticNamesAreAnError(t *testing.T) {
+	body := minimal + "tables:\n  static:\n    - name: public.t\n    - name: public.t\n"
+	contains(t, loadErr(t, body), "static", "public.t", "duplicate")
+}
+
+func TestConfig_BadExcludeGlobIsAnError(t *testing.T) {
+	contains(t, loadErr(t, minimal+"tables:\n  discover:\n    exclude: [\"[\"]\n"), "exclude", "[")
+}
+
+func TestConfig_ExactIntervalDefaultFollowsALongProbe(t *testing.T) {
+	f, err := Load(write(t, minimal+"probe:\n  interval_seconds: 7200\n"))
+	assert.NoError(t, err)
+	assert.Equal(t, 7200, f.Tables.RowsExactIntervalSeconds)
+}
