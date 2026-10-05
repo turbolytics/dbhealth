@@ -3,6 +3,7 @@ package report
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/turbolytics/sql-flow/turbostats/wire"
@@ -43,7 +44,7 @@ func datagrams(db string, d *wire.Database) []string {
 	var b strings.Builder
 	base := "db:" + db
 	g := func(name string, v any, tags string) {
-		line := fmt.Sprintf("dbhealth.%s:%v|g|#%s\n", name, v, tags)
+		line := fmt.Sprintf("dbhealth.%s:%s|g|#%s\n", name, gauge(v), tags)
 		if b.Len()+len(line) > maxDatagram && b.Len() > 0 {
 			out = append(out, b.String())
 			b.Reset()
@@ -97,6 +98,30 @@ func datagrams(db string, d *wire.Database) []string {
 		out = append(out, b.String())
 	}
 	return out
+}
+
+// gauge formats a value as StatsD reads it: plain decimal, never
+// scientific, and never negative, which a server reads as a decrement
+// rather than a value. Replica lag can read below zero on clock skew.
+func gauge(v any) string {
+	switch n := v.(type) {
+	case float64:
+		if n < 0 {
+			n = 0
+		}
+		return strconv.FormatFloat(n, 'f', -1, 64)
+	case int64:
+		if n < 0 {
+			n = 0
+		}
+		return strconv.FormatInt(n, 10)
+	case int:
+		if n < 0 {
+			n = 0
+		}
+		return strconv.Itoa(n)
+	}
+	return fmt.Sprint(v)
 }
 
 func boolInt(v bool) int {

@@ -29,8 +29,8 @@ ok: 1 databases
 ./bin/dbhealth run -c dbhealth.yml
 ```
 
-Everything else defaults: every table, probed once a minute,
-row counts estimated.
+Everything else defaults: the first 50 tables by name, in every schema
+but the catalog, probed once a minute, row counts estimated.
 
 A minute later control shows `billing-primary`: serving, 3ms; 18 of 100
 connections; 2.1 GB; `public.events` newest row 12s ago, 48,213,904 rows.

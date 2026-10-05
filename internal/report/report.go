@@ -35,8 +35,9 @@ var Commit = ""
 // Endpoint is control's path for bundles.
 const Endpoint = "/v1/turbostats"
 
-// postTimeout bounds one post. Nothing the reporter does waits longer.
-const postTimeout = 10 * time.Second
+// defaultPostTimeout bounds one POST, after the collection: the two never
+// share a budget, so a slow table query cannot cost the bundle.
+const defaultPostTimeout = 10 * time.Second
 
 // jitterFraction spreads a fleet's posts, so a thousand instances started
 // together do not report in the same second of every minute.
@@ -46,10 +47,8 @@ const jitterFraction = 0.1
 type Instance struct {
 	// Name is the instance name control shows; the id is dbhealth-<name>.
 	Name string
-	// DSN is held only so a test can check it never leaves. The reporter
-	// does not read it.
-	DSN string
-	// Collect is the collector's interval.
+	// Collect is the collector's interval. Its context ends with the
+	// interval: a database that answers nothing cannot hold the next one.
 	Collect func(context.Context) wire.Database
 }
 
@@ -72,18 +71,20 @@ type Config struct {
 
 // Reporter posts for every instance, once per interval.
 type Reporter struct {
-	url       string
-	key       ed25519.PrivateKey
-	statsd    *statsd
-	interval  time.Duration
-	version   string
-	hash      string
-	instances []Instance
-	log       *zap.Logger
-	now       func() time.Time
-	client    *http.Client
-	startedAt time.Time
-	rand      *rand.Rand
+	url         string
+	logURL      string
+	key         ed25519.PrivateKey
+	statsd      *statsd
+	interval    time.Duration
+	postTimeout time.Duration
+	version     string
+	hash        string
+	instances   []Instance
+	log         *zap.Logger
+	now         func() time.Time
+	client      *http.Client
+	startedAt   time.Time
+	rand        *rand.Rand
 
 	mu      sync.Mutex
 	failing map[string]bool
@@ -95,7 +96,7 @@ func New(c Config) (*Reporter, error) {
 	r := &Reporter{
 		interval: c.Interval, version: c.Version, hash: c.ConfigHash, instances: c.Instances,
 		log: c.Log, now: c.Now, client: c.Client, failing: map[string]bool{},
-		rand: rand.New(rand.NewSource(seed())),
+		rand: rand.New(rand.NewSource(seed())), postTimeout: defaultPostTimeout,
 	}
 	if r.version == "" {
 		r.version = Version
@@ -107,7 +108,7 @@ func New(c Config) (*Reporter, error) {
 		r.now = time.Now
 	}
 	if r.client == nil {
-		r.client = &http.Client{Timeout: postTimeout}
+		r.client = &http.Client{Timeout: defaultPostTimeout}
 	}
 	r.startedAt = r.now().UTC()
 	if c.To != "" {
@@ -119,6 +120,10 @@ func New(c Config) (*Reporter, error) {
 			u.Path = Endpoint
 		}
 		r.url = u.String()
+		// What the log says: never a user, a password or a query, which
+		// an operator may have put in the URL.
+		u.User, u.RawQuery, u.Fragment = nil, "", ""
+		r.logURL = u.String()
 		key, err := wire.ParseCredential(c.Credential)
 		if err != nil {
 			return nil, errors.New("report.credential: not a credential; it starts with " + wire.CredentialPrefix)
@@ -201,16 +206,18 @@ func (r *Reporter) Close() {
 // post collects one instance's section, wraps it in a bundle, and sends
 // it. It returns nothing: a caller cannot act on a failure.
 func (r *Reporter) post(ctx context.Context, inst Instance, exit *wire.Exit) {
-	ctx, cancel := context.WithTimeout(ctx, postTimeout)
-	defer cancel()
-
-	d := inst.Collect(ctx)
+	// Collection gets the interval; the POST gets its own budget after.
+	cctx, cancelCollect := context.WithTimeout(ctx, r.interval)
+	d := inst.Collect(cctx)
+	cancelCollect()
 	if r.statsd != nil {
 		r.statsd.send(inst.Name, &d)
 	}
 	if r.url == "" {
 		return
 	}
+	ctx, cancel := context.WithTimeout(ctx, r.postTimeout)
+	defer cancel()
 	b := r.bundle(inst, &d, exit)
 	body, err := json.Marshal(b)
 	if err != nil {
@@ -249,8 +256,6 @@ func (r *Reporter) post(ctx context.Context, inst Instance, exit *wire.Exit) {
 func (r *Reporter) bundle(inst Instance, d *wire.Database, exit *wire.Exit) wire.Bundle {
 	now := r.now().UTC()
 	uptime := int64(now.Sub(r.startedAt).Seconds())
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
 	b := wire.Bundle{
 		V:               wire.Version,
 		SentAt:          now,
@@ -265,10 +270,11 @@ func (r *Reporter) bundle(inst Instance, d *wire.Database, exit *wire.Exit) wire
 			ConfigHash: r.hash,
 			Runtime:    "dbhealth",
 		},
+		// RSS is the kernel's number, which the Go runtime cannot give;
+		// the contract reads an absent one as not measured, which is true.
 		Process: wire.Process{
 			StartedAt:     r.startedAt,
 			UptimeSeconds: &uptime,
-			RSSBytes:      int64(ms.Sys),
 			Goroutines:    runtime.NumGoroutine(),
 		},
 		Database: d,
@@ -287,7 +293,7 @@ func (r *Reporter) fail(name, what string, err error) {
 	if !r.failing[name] {
 		r.failing[name] = true
 		r.log.Warn("turbostats reporting is failing", zap.String("instance", name), zap.String("step", what),
-			zap.String("report_to", r.url), zap.Error(err))
+			zap.String("report_to", r.logURL), zap.Error(redact(err, r.url, r.logURL)))
 		return
 	}
 	r.log.Debug("turbostats post failed", zap.String("instance", name), zap.String("step", what), zap.Error(err))
@@ -300,18 +306,15 @@ func (r *Reporter) succeed(name string) {
 	defer r.mu.Unlock()
 	if r.failing[name] {
 		r.failing[name] = false
-		r.log.Info("turbostats reporting recovered", zap.String("instance", name), zap.String("report_to", r.url))
+		r.log.Info("turbostats reporting recovered", zap.String("instance", name), zap.String("report_to", r.logURL))
 	}
 }
 
-// ExitReason names how the process ended, for the final bundle.
-func ExitReason(err error) string {
-	switch {
-	case err == nil:
-		return "signal"
-	case strings.Contains(err.Error(), "context canceled"):
-		return "signal"
-	default:
-		return "system.internal.unexpected"
+// redact replaces the full URL in an HTTP client's error with the one the
+// log may carry.
+func redact(err error, full, shown string) error {
+	if full == shown {
+		return err
 	}
+	return errors.New(strings.ReplaceAll(err.Error(), full, shown))
 }

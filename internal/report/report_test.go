@@ -227,7 +227,7 @@ func TestReport_FinalCarriesTheExit(t *testing.T) {
 func TestReport_DSNNeverInBody(t *testing.T) {
 	cred, priv := credential(t)
 	c := newControl(t, priv)
-	r, logs := newReporter(t, c, cred, fixedNow, Instance{Name: "x", DSN: dsn, Collect: database(okAt)})
+	r, logs := newReporter(t, c, cred, fixedNow, Instance{Name: "x", Collect: database(okAt)})
 	r.Once(context.Background())
 	c.mu.Lock()
 	raw := string(c.raw[0])
@@ -350,4 +350,93 @@ func TestStatsD_DatagramsStayUnderTheMTU(t *testing.T) {
 	}
 	// probe 3 + connections 3 + 50 tables × (rows, rows_exact, size) + collection 3
 	assert.Equal(t, 3+3+50*3+3, total)
+}
+
+// Findings from the review of #5.
+
+// A slow collection must not eat the POST's budget: the bundle still goes
+// out, late, rather than not at all.
+func TestReport_ASlowCollectStillPosts(t *testing.T) {
+	cred, priv := credential(t)
+	c := newControl(t, priv)
+	slow := func(ctx context.Context) wire.Database {
+		// Longer than the POST timeout a test is given, shorter than the
+		// collect budget.
+		time.Sleep(300 * time.Millisecond)
+		return database(okAt)(ctx)
+	}
+	core, logs := observer.New(zap.DebugLevel)
+	r, err := New(Config{To: c.srv.URL, Credential: cred, Interval: time.Minute, Log: zap.New(core), Now: fixedNow,
+		Instances: []Instance{{Name: "x", Collect: slow}}})
+	assert.NoError(t, err)
+	r.postTimeout = 200 * time.Millisecond
+	r.Once(context.Background())
+	assert.Equal(t, 1, len(c.posts()))
+	assert.Equal(t, 0, len(logs.FilterLevelExact(zap.WarnLevel).All()))
+}
+
+// Collection is bounded by the interval: a database that answers nothing
+// cannot hold the next interval back.
+func TestReport_CollectIsBoundedByTheInterval(t *testing.T) {
+	cred, priv := credential(t)
+	c := newControl(t, priv)
+	var deadline time.Duration
+	collect := func(ctx context.Context) wire.Database {
+		d, _ := ctx.Deadline()
+		deadline = time.Until(d)
+		return database(okAt)(ctx)
+	}
+	core, _ := observer.New(zap.DebugLevel)
+	r, err := New(Config{To: c.srv.URL, Credential: cred, Interval: 30 * time.Second, Log: zap.New(core),
+		Instances: []Instance{{Name: "x", Collect: collect}}})
+	assert.NoError(t, err)
+	r.Once(context.Background())
+	assert.That(t, deadline > 25*time.Second && deadline <= 30*time.Second)
+}
+
+func TestReport_RSSIsNotInventedFromTheGoRuntime(t *testing.T) {
+	cred, priv := credential(t)
+	c := newControl(t, priv)
+	r, _ := newReporter(t, c, cred, fixedNow, Instance{Name: "x", Collect: database(okAt)})
+	r.Once(context.Background())
+	assert.Equal(t, int64(0), c.posts()[0].Process.RSSBytes)
+}
+
+func TestReport_ReportToIsLoggedWithoutASecret(t *testing.T) {
+	cred, priv := credential(t)
+	c := newControl(t, priv)
+	c.status = []int{500}
+	core, logs := observer.New(zap.DebugLevel)
+	to := strings.Replace(c.srv.URL, "http://", "http://user:hunter2@", 1) + "/v1/turbostats?token=hunter2"
+	r, err := New(Config{To: to, Credential: cred, Interval: time.Minute, Log: zap.New(core), Now: fixedNow,
+		Instances: []Instance{{Name: "x", Collect: database(okAt)}}})
+	assert.NoError(t, err)
+	r.Once(context.Background())
+	warns := logs.FilterLevelExact(zap.WarnLevel).All()
+	assert.Equal(t, 1, len(warns))
+	for _, f := range warns[0].Context {
+		assert.False(t, strings.Contains(f.String, "hunter2"))
+		if f.Interface != nil {
+			assert.False(t, strings.Contains(fmt.Sprint(f.Interface), "hunter2"))
+		}
+	}
+}
+
+func TestStatsD_GaugesArePlainAndNeverNegative(t *testing.T) {
+	d := database(okAt)(context.Background())
+	tiny, negative := 1.2e-05, -0.3
+	d.Replication = &wire.DatabaseReplication{Role: "replica", LagSeconds: &tiny,
+		Replicas: []wire.DatabaseReplica{{Name: "r1", LagSeconds: &negative}}}
+	lines := strings.Split(strings.TrimSpace(strings.Join(datagrams("db", &d), "")), "\n")
+	var lag, replica string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "dbhealth.replication.lag_seconds:") {
+			lag = l
+		}
+		if strings.HasPrefix(l, "dbhealth.replication.replica.lag_seconds:") {
+			replica = l
+		}
+	}
+	assert.Equal(t, "dbhealth.replication.lag_seconds:0.000012|g|#db:db", lag)
+	assert.Equal(t, "dbhealth.replication.replica.lag_seconds:0|g|#db:db,replica:r1", replica)
 }

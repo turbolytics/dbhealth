@@ -321,3 +321,15 @@ func TestConfig_MaxTablesIsBoundedByTheBundle(t *testing.T) {
 	}
 	contains(t, loadErr(t, static.String()), "static", "50")
 }
+
+// validate must refuse what run cannot open: pgx reads the whole DSN,
+// so RedactedTarget asks it, and a bad parameter fails here, with a
+// message that names the parameter and not the DSN.
+func TestConfig_ValidateRefusesWhatPgxCannotOpen(t *testing.T) {
+	body := strings.Replace(minimal, "dsn: postgres://u@h:5432/d", "dsn: postgres://u:secret@h:5432/d?sslmode=bogus", 1)
+	err := loadErr(t, body)
+	contains(t, err, "dsn", "sslmode")
+	if strings.Contains(err, "secret") {
+		t.Fatalf("the error carries the password: %q", err)
+	}
+}
