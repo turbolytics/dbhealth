@@ -62,6 +62,9 @@ func New(db config.Database, tables config.Tables, probe config.Probe, src Sourc
 	return &Collector{db: db, tables: tables, probe: probe, src: src, now: now, target: target, last: map[string]*tableState{}}
 }
 
+// Target is host:port/database, what the bundle carries for this database.
+func (c *Collector) Target() string { return c.target }
+
 // Collect is one interval. Everything it schedules is against the clock
 // read here, once, so a slow query cannot drift the next check.
 func (c *Collector) Collect(ctx context.Context) wire.Database {

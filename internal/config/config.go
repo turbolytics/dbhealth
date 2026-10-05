@@ -354,12 +354,20 @@ var urlScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://`)
 // carries the DSN, or any part of it.
 func RedactedTarget(dsn string) (string, error) {
 	if m := urlScheme.FindString(dsn); m != "" {
-		return redactURL(dsn, strings.TrimSuffix(m, "://"))
+		target, err := redactURL(dsn, strings.TrimSuffix(m, "://"))
+		if err != nil {
+			return "", err
+		}
+		// pgx reads the whole DSN, so what run cannot open fails here.
+		if _, err := pgconn.ParseConfig(dsn); err != nil {
+			return "", errors.New("pgx refuses the dsn: " + pgxReason(err))
+		}
+		return target, nil
 	}
 	cfg, err := pgconn.ParseConfig(dsn)
 	if err != nil {
 		// pgconn's error can quote the DSN; this one does not.
-		return "", errors.New("not a key=value dsn")
+		return "", errors.New("not a key=value dsn: " + pgxReason(err))
 	}
 	if cfg.Host == "" {
 		return "", errors.New("the dsn names no host")
@@ -373,6 +381,20 @@ func RedactedTarget(dsn string) (string, error) {
 		target += "/" + cfg.Database
 	}
 	return target, nil
+}
+
+// pgxReason is the part of a pgconn parse error after the DSN it quotes:
+// "sslmode is invalid" from "cannot parse `...`: sslmode is invalid".
+func pgxReason(err error) string {
+	var perr *pgconn.ParseConfigError
+	if errors.As(err, &perr) && perr.Unwrap() != nil {
+		return perr.Unwrap().Error()
+	}
+	s := err.Error()
+	if i := strings.LastIndex(s, "`: "); i >= 0 {
+		return s[i+3:]
+	}
+	return "it did not parse"
 }
 
 func redactURL(dsn, scheme string) (string, error) {
