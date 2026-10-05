@@ -2,7 +2,7 @@
 
 Is my database serving? How close is it to its limits? Are its tables
 current? `dbhealth` asks one Postgres those questions every minute and
-reports the answers to [control](https://github.com/turbolytics/sql-flow-control),
+reports the answers to [control](https://control.turbolytics.io),
 beside your pipelines.
 
 ## One minute
@@ -11,7 +11,7 @@ beside your pipelines.
 git clone https://github.com/turbolytics/dbhealth && cd dbhealth && make build
 
 export DBHEALTH_PRIMARY_DSN='postgres://user:password@pg.internal:5432/billing'
-export TURBOSTATS_CREDENTIAL='sfc_...'     # from control: sqlflow-control credential create
+export TURBOSTATS_CREDENTIAL='sfc_...'     # from control.turbolytics.io: your org's credential
 
 cat > dbhealth.yml <<'EOF'
 databases:
