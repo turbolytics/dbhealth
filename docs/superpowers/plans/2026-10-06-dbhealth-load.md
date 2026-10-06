@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-06-turbostats-database-load-design.md` (merged in sql-flow #445; this copy is for the executor).
 
+**Ruling, 2026-10-06 (Danny):** per-query facts are not read. `pg_stat_statements` keeps a utility statement's text verbatim — `CREATE ROLE … PASSWORD 'r'` sits in it with its literal — and stripping literals is a promise dbhealth would be on the hook for. `wire.DatabaseQuery` stays in the contract, nothing sends it; `queries_per_second` is absent on Postgres (it came from the extension). Task 2's `Queries()`, normalization and the extension are out (done in #16); Task 3's `queries` scheduling and Task 4's per-query gauges are out.
+
 ## Global Constraints
 
 - **Samples are `_now`, rates are `_per_second`.** A rate is `(counter_now - counter_then) / seconds`, from two readings. Never a sample passed off as a rate.
