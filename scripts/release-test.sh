@@ -13,11 +13,12 @@ IMAGE=${1:?image}
 NET=dbhealth-rt-$$
 PG=dbhealth-rt-pg-$$
 RUN=dbhealth-rt-run-$$
+QUICK=dbhealth-rt-quick-$$
 SD=dbhealth-rt-statsd-$$
 PASS=rt-secret-$$
 WORK=$(mktemp -d)
 cleanup() {
-  docker rm -f "$PG" "$RUN" "$SD" >/dev/null 2>&1 || true
+  docker rm -f "$PG" "$RUN" "$QUICK" "$SD" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
@@ -91,6 +92,15 @@ cat "$WORK/run.log"
 docker logs "$SD" > "$WORK/statsd.txt" 2>&1
 echo "$(wc -l < "$WORK/statsd.txt") gauges received"
 
+# The README's quick start: the image with no arguments, configured by the
+# environment alone, and no Control yet, so metrics only.
+echo "quick start, no arguments:"
+docker run -d --name "$QUICK" --network "$NET" -e DBHEALTH_DSN="$DSN" -e DBHEALTH_METRICS=prometheus "$IMAGE" >/dev/null
+sleep 5
+docker run --rm --network "$NET" curlimages/curl:8.11.1 -s "http://${QUICK}:8000/metrics" > "$WORK/quick.txt" || true
+docker logs "$QUICK" > "$WORK/quick.log" 2>&1
+docker rm -f "$QUICK" >/dev/null 2>&1 || true
+
 fail=0
 check() { grep -q -- "$1" "$WORK/statsd.txt" && echo "ok   $1" || { echo "MISSING $1"; fail=1; }; }
 check "dbhealth.probe.ok:1|g|#db:release-test"
@@ -99,6 +109,7 @@ check "dbhealth.table.rows:250|g|#db:release-test,table:public.events"
 check "dbhealth.table.rows_exact:1|g|#db:release-test,table:public.events"
 check "dbhealth.table.newest_at:"
 grep -q '"status":"healthy"' "$WORK/healthz.txt" && echo "ok   /healthz" || { echo "MISSING /healthz"; fail=1; }
+grep -q '^dbhealth_probe_ok{.*} 1' "$WORK/quick.txt" && echo "ok   quick start serves /metrics" || { echo "MISSING quick start /metrics"; cat "$WORK/quick.log"; fail=1; }
 grep -q 'dbhealth_probe_ok{db="release-test"} 1' "$WORK/metrics.txt" && echo "ok   /metrics probe_ok" || { echo "MISSING /metrics dbhealth_probe_ok"; fail=1; }
 grep -q 'dbhealth_table_rows{db="release-test",table="public.events"} 250' "$WORK/metrics.txt" && echo "ok   /metrics table_rows" || { echo "MISSING /metrics dbhealth_table_rows"; fail=1; }
 grep -q 'dbhealth_load_sessions_active_now{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics load sample" || { echo "MISSING /metrics dbhealth_load_sessions_active_now"; fail=1; }

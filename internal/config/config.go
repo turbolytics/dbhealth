@@ -6,7 +6,6 @@ package config
 
 import (
 	"bytes"
-	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -350,8 +349,15 @@ func FromEnv() (*File, error) {
 			},
 		},
 	}
-	in.Report.To = cmp.Or(os.Getenv("DBHEALTH_REPORT_TO"), DefaultReportTo)
+	// Control's ingest is the default only with a key to sign for it. With
+	// no key, dbhealth reports to the metrics endpoint alone: the README's
+	// "no Control yet" start. A DBHEALTH_REPORT_TO without a key is still
+	// refused by validate, below.
 	in.Report.Credential = os.Getenv("DBHEALTH_KEY")
+	in.Report.To = os.Getenv("DBHEALTH_REPORT_TO")
+	if in.Report.To == "" && in.Report.Credential != "" {
+		in.Report.To = DefaultReportTo
+	}
 	in.Report.StatsD = os.Getenv("DBHEALTH_STATSD")
 	in.Report.Metrics = os.Getenv("DBHEALTH_METRICS")
 	in.Report.OTLP = os.Getenv("DBHEALTH_OTLP")
