@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -51,6 +52,7 @@ func run(args []string) int {
 	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	path := fs.String("c", "", "the config file")
+	exporter := fs.String("metrics", "", "metrics exporter to enable (prometheus, otlp); serves /metrics and /healthz on report.listen, :8000 by default")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -63,6 +65,9 @@ func run(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dbhealth: %v\n", err)
 		return 1
+	}
+	if *exporter != "" {
+		f.Report.Metrics = *exporter
 	}
 	switch args[0] {
 	case "validate":
@@ -107,6 +112,7 @@ func serve(f *config.File, path string) int {
 
 	r, err := report.New(report.Config{
 		To: f.Report.To, Credential: f.Report.Credential, StatsD: f.Report.StatsD,
+		Metrics: f.Report.Metrics, OTLP: f.Report.OTLP,
 		Interval:   time.Duration(f.Probe.IntervalSeconds) * time.Second,
 		ConfigHash: configHash(path), Instances: instances, Log: log,
 	})
@@ -115,6 +121,27 @@ func serve(f *config.File, path string) int {
 		return 1
 	}
 	defer r.Close()
+
+	// /healthz for a supervisor and, with the Prometheus exporter, /metrics,
+	// on one listener as sql-flow serves them.
+	if f.Report.Metrics != "" {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"healthy"}` + "\n"))
+		})
+		if h := r.Metrics(); h != nil {
+			mux.Handle("/metrics", h)
+		}
+		srv := &http.Server{Addr: f.Report.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Error("metrics listener stopped", zap.String("listen", f.Report.Listen), zap.Error(err))
+			}
+		}()
+		defer srv.Close()
+		log.Info("serving", zap.String("listen", f.Report.Listen), zap.String("metrics", f.Report.Metrics))
+	}
 	log.Info("dbhealth started", zap.String("report_to", f.Report.To), zap.String("statsd", f.Report.StatsD),
 		zap.Int("interval_seconds", f.Probe.IntervalSeconds), zap.String("version", report.Version))
 

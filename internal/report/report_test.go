@@ -457,3 +457,138 @@ func TestReport_NoClusterIsItsOwn(t *testing.T) {
 	assert.Equal(t, "orders-pg", b.Instance.Name)
 	assert.Equal(t, "orders-pg", b.Database.Cluster)
 }
+
+// Prometheus: the same facts as the StatsD gauges, scraped.
+
+func scrape(t *testing.T, r *Reporter) string {
+	t.Helper()
+	srv := httptest.NewServer(r.Metrics())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL)
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
+}
+
+func TestMetrics_SeriesMirrorTheBundle(t *testing.T) {
+	core, _ := observer.New(zap.DebugLevel)
+	r, err := New(Config{Metrics: "prometheus", Interval: time.Minute, Log: zap.New(core), Now: fixedNow,
+		Instances: []Instance{{Name: "billing-primary", Collect: database(okAt)}}})
+	assert.NoError(t, err)
+	r.Once(context.Background())
+	body := scrape(t, r)
+	for _, want := range []string{
+		`dbhealth_probe_ok{db="billing-primary"} 1`,
+		`dbhealth_probe_latency_ms{db="billing-primary"} 3`,
+		`dbhealth_connections_used{db="billing-primary"} 18`,
+		`dbhealth_connections_max{db="billing-primary"} 100`,
+		`dbhealth_table_rows{db="billing-primary",table="public.usage_per_minute"} 7832`,
+		`dbhealth_table_rows_exact{db="billing-primary",table="public.usage_per_minute"} 1`,
+		`dbhealth_table_size_bytes{db="billing-primary",table="public.usage_per_minute"} 4096`,
+		`dbhealth_collection_queries{db="billing-primary"} 9`,
+		`dbhealth_collection_errors{db="billing-primary"} 0`,
+		`dbhealth_last_collect_timestamp_seconds{db="billing-primary"}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("no series %q in:\n%s", want, body)
+		}
+	}
+	// Absent fields are absent series.
+	assert.False(t, strings.Contains(body, "dbhealth_size_bytes{"))
+	assert.False(t, strings.Contains(body, "dbhealth_replication_lag_seconds{"))
+	assert.False(t, strings.Contains(body, "dbhealth_table_newest_at_seconds{"))
+}
+
+// A field present last interval and absent this one is gone from the
+// scrape, not a stale number: a role that loses pg_read_all_stats, or a
+// table dropped, stops being reported rather than frozen.
+func TestMetrics_AnAbsentFieldLeavesNoStaleSeries(t *testing.T) {
+	core, _ := observer.New(zap.DebugLevel)
+	full := true
+	collect := func(ctx context.Context) wire.Database {
+		d := database(okAt)(ctx)
+		if !full {
+			d.Resources.Connections = nil
+			d.Tables = nil
+		}
+		return d
+	}
+	r, err := New(Config{Metrics: "prometheus", Interval: time.Minute, Log: zap.New(core), Now: fixedNow,
+		Instances: []Instance{{Name: "x", Collect: collect}}})
+	assert.NoError(t, err)
+	r.Once(context.Background())
+	assert.That(t, strings.Contains(scrape(t, r), `dbhealth_connections_used{db="x"}`))
+	full = false
+	r.Once(context.Background())
+	body := scrape(t, r)
+	assert.False(t, strings.Contains(body, `dbhealth_connections_used{db="x"}`))
+	assert.False(t, strings.Contains(body, `dbhealth_table_rows{`))
+	assert.That(t, strings.Contains(body, `dbhealth_probe_ok{db="x"} 1`))
+}
+
+func TestMetrics_TwoDatabasesDoNotCollide(t *testing.T) {
+	core, _ := observer.New(zap.DebugLevel)
+	r, err := New(Config{Metrics: "prometheus", Interval: time.Minute, Log: zap.New(core), Now: fixedNow,
+		Instances: []Instance{{Name: "a", Collect: database(okAt)}, {Name: "b", Collect: database(okAt)}}})
+	assert.NoError(t, err)
+	r.Once(context.Background())
+	body := scrape(t, r)
+	assert.That(t, strings.Contains(body, `dbhealth_probe_ok{db="a"} 1`))
+	assert.That(t, strings.Contains(body, `dbhealth_probe_ok{db="b"} 1`))
+}
+
+func TestMetrics_NoneConfiguredIsNoHandler(t *testing.T) {
+	core, _ := observer.New(zap.DebugLevel)
+	r, err := New(Config{StatsD: "127.0.0.1:1", Interval: time.Minute, Log: zap.New(core), Now: fixedNow,
+		Instances: []Instance{{Name: "x", Collect: database(okAt)}}})
+	assert.NoError(t, err)
+	assert.Nil(t, r.Metrics())
+}
+
+// OTLP: a collector's origin is enough; the path is the protocol's. The
+// gauges reach it on Close, which flushes the periodic reader.
+func TestMetrics_OTLPPostsToV1Metrics(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		bodies = append(bodies, body)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	core, logs := observer.New(zap.DebugLevel)
+	for _, to := range []string{srv.URL, srv.URL + "/", srv.URL + "/v1/metrics"} {
+		r, err := New(Config{Metrics: "otlp", OTLP: to, Interval: time.Minute, Log: zap.New(core), Now: fixedNow,
+			Instances: []Instance{{Name: "x", Collect: database(okAt)}}})
+		assert.NoError(t, err)
+		r.Once(context.Background())
+		r.Close()
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 3, len(paths))
+	for i, p := range paths {
+		assert.Equal(t, "/v1/metrics", p)
+		assert.That(t, strings.Contains(string(bodies[i]), "dbhealth_probe_ok"))
+	}
+	assert.Equal(t, 0, len(logs.FilterLevelExact(zap.WarnLevel).All()))
+}
+
+// An exporter that cannot reach its collector says so in dbhealth's own
+// log, once per run of failures, not on stderr through a global handler.
+func TestMetrics_OTLPFailureIsLoggedOnce(t *testing.T) {
+	core, logs := observer.New(zap.DebugLevel)
+	r, err := New(Config{Metrics: "otlp", OTLP: "http://127.0.0.1:1", Interval: time.Minute, Log: zap.New(core), Now: fixedNow,
+		Instances: []Instance{{Name: "x", Collect: database(okAt)}}})
+	assert.NoError(t, err)
+	r.Once(context.Background())
+	r.Close()
+	warns := logs.FilterLevelExact(zap.WarnLevel).All()
+	assert.Equal(t, 1, len(warns))
+	assert.That(t, strings.Contains(warns[0].Message, "metrics export is failing"))
+}

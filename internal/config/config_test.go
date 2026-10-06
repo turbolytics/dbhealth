@@ -384,3 +384,35 @@ func TestFromEnv_Refusals(t *testing.T) {
 	assert.Error(t, err)
 	assert.False(t, strings.Contains(err.Error(), "secret"))
 }
+
+func TestConfig_MetricsIsAnOutputOnItsOwn(t *testing.T) {
+	body := strings.Replace(minimal, "report:\n  statsd: localhost:8125\n", "report:\n  metrics: prometheus\n", 1)
+	f, err := Load(write(t, body))
+	assert.NoError(t, err)
+	assert.Equal(t, "prometheus", f.Report.Metrics)
+	assert.Equal(t, ":8000", f.Report.Listen)
+	err2 := loadErr(t, strings.Replace(minimal, "report:\n  statsd: localhost:8125\n", "", 1))
+	contains(t, err2, "report.metrics")
+}
+
+func TestConfig_MetricsIsPrometheusOrOTLP(t *testing.T) {
+	contains(t, loadErr(t, minimal+"  metrics: graphite\n"), "report.metrics", "graphite", "prometheus", "otlp")
+	contains(t, loadErr(t, minimal+"  metrics: otlp\n"), "report.otlp")
+	f, err := Load(write(t, minimal+"  metrics: otlp\n  otlp: http://collector:4318\n  listen: 127.0.0.1:9100\n"))
+	assert.NoError(t, err)
+	assert.Equal(t, "http://collector:4318", f.Report.OTLP)
+	assert.Equal(t, "127.0.0.1:9100", f.Report.Listen)
+}
+
+func TestConfig_FromEnvReadsMetrics(t *testing.T) {
+	t.Setenv("DBHEALTH_DSN", "postgres://u:p@h:5432/d")
+	t.Setenv("DBHEALTH_KEY", "sfc_x")
+	t.Setenv("DBHEALTH_METRICS", "otlp")
+	t.Setenv("DBHEALTH_OTLP", "http://datadog-agent:4318")
+	t.Setenv("DBHEALTH_LISTEN", "127.0.0.1:9100")
+	f, err := FromEnv()
+	assert.NoError(t, err)
+	assert.Equal(t, "otlp", f.Report.Metrics)
+	assert.Equal(t, "http://datadog-agent:4318", f.Report.OTLP)
+	assert.Equal(t, "127.0.0.1:9100", f.Report.Listen)
+}

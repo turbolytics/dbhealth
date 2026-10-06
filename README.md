@@ -81,6 +81,21 @@ tables:
       freshness_column: created_at
 ```
 
+## Prometheus, Datadog, OpenTelemetry
+
+The same facts go wherever you watch, through OpenTelemetry:
+
+| | config | gets you |
+|---|---|---|
+| Prometheus | `metrics: prometheus` or `dbhealth run --metrics prometheus` | `/metrics` and `/healthz` on `:8000`: Grafana, Alertmanager, anything that scrapes |
+| OTLP | `metrics: otlp` + `otlp: http://collector:4318` | a push every interval: the Datadog agent's OTLP receiver, Grafana Alloy, Honeycomb, any collector |
+| StatsD | `statsd: localhost:8125` | DogStatsD gauges, Datadog-style tags |
+
+One name set everywhere: `dbhealth_probe_ok{db}`, `dbhealth_connections_used{db}`,
+`dbhealth_table_rows{db,table}`, `dbhealth_table_newest_at_seconds{db,table}`,
+`dbhealth_collection_errors{db}`. A field the database could not give is
+absent, not zero.
+
 ## What it costs the database
 
 Every interval: one `SELECT 1`, four catalog reads, and per table one
