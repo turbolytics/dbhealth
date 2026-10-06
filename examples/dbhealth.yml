@@ -31,6 +31,10 @@ tables:
   freshness_interval_seconds: 60      # max() on a timestamp column, cheap with an index, not without
   rows_exact_interval_seconds: 3600   # count(*) where a table asked for it
 
+load:
+  enabled: true                       # what people are doing to it: sessions now, rates over the interval
+  # queries are never read: a statement store's text can carry a literal
+
 report:
   to: https://ingest.turbolytics.io/v1/turbostats
   credential: "{{ TURBOSTATS_CREDENTIAL }}"

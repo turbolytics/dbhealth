@@ -44,18 +44,22 @@ same names; StatsD the same with dots.
 | | metric | from |
 |---|---|---|
 | **serving?** | `dbhealth_probe_ok`, `dbhealth_probe_latency_ms`, `dbhealth_probe_consecutive_failures` | one `SELECT 1`, timed |
+| **how busy?** | `dbhealth_load_sessions_active_now` / `_waiting_now` / `_idle_in_transaction_now`, `dbhealth_load_longest_query_seconds`; `dbhealth_load_transactions_per_second`, `_rows_read_per_second`, `_rows_written_per_second`, `_cache_hit_ratio`, `_temp_bytes_per_second`, `_deadlocks_per_second` | `pg_stat_activity` now; `pg_stat_database` counters, two readings apart |
 | **near its limits?** | `dbhealth_connections_used` / `_max` / `_waiting`, `dbhealth_size_bytes`, `dbhealth_oldest_transaction_seconds`, `dbhealth_memory_shared_buffers_bytes` | `pg_stat_activity`, `pg_database_size` |
-| **tables current?** | `dbhealth_table_newest_at_seconds`, `dbhealth_table_rows`, `dbhealth_table_rows_exact`, `dbhealth_table_size_bytes` — labelled `table` | `max(timestamp column)`, `n_live_tup` or `count(*)` |
+| **tables current?** | `dbhealth_table_newest_at_seconds`, `dbhealth_table_rows`, `dbhealth_table_rows_exact`, `dbhealth_table_size_bytes`, `dbhealth_table_dead_rows`, `_seq_scans_per_second` / `_index_scans_per_second` — labelled `table` | `max(timestamp column)`, `n_live_tup` or `count(*)`, `pg_stat_user_tables` |
 | **replication** | `dbhealth_replication_lag_seconds`, per-replica lag | `pg_stat_replication` |
 | **what it cost** | `dbhealth_collection_queries`, `_duration_ms`, `_errors` | counted |
 
 Every series carries `db`. A field the database could not give is absent,
 not zero: a role without `pg_read_all_stats` gets an error naming the
-grant, not a connection count that is wrong.
+grant, not a connection count that is wrong. A `_per_second` rate is the
+interval's, from the database's own counters two readings apart; the
+first interval after a start or a stats reset sends none. Query text is
+never read.
 
-**What it costs the database:** one `SELECT 1`, four catalog reads, and per
+**What it costs the database:** one `SELECT 1`, six catalog reads, and per
 table one estimate and one `max()`, every interval. `count(*)` only where
-you ask, once an hour.
+you ask, once an hour. `load: {enabled: false}` drops two of the reads.
 
 ## Config
 
@@ -92,6 +96,9 @@ tables:
   freshness_interval_seconds: 60
   rows_exact_interval_seconds: 3600
 
+load:
+  enabled: true                       # sessions and rates; two catalog reads an interval
+
 report:
   to: https://ingest.turbolytics.io/v1/turbostats
   credential: "{{ TURBOSTATS_CREDENTIAL }}"
@@ -115,6 +122,7 @@ the replica your application reads from. `cluster` groups them in control.
 | `DBHEALTH_KEY` | the control credential |
 | `DBHEALTH_NAME`, `DBHEALTH_CLUSTER` | default to the database's name |
 | `DBHEALTH_METRICS` | `prometheus` or `otlp` |
+| `DBHEALTH_LOAD` | `false` to leave the load facts out |
 | `DBHEALTH_OTLP`, `DBHEALTH_LISTEN`, `DBHEALTH_STATSD` | the collector; the listen address (`:8000`); StatsD |
 
 The connection string never leaves the process. What is sent is

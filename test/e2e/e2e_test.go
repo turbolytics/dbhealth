@@ -267,3 +267,35 @@ func TestE2E_TheDSNIsNowhere(t *testing.T) {
 		assert.False(t, leaks(string(raw)))
 	}
 }
+
+// Under the metering stack's workers, the load facts move: transactions
+// and rows read per second above zero from the second interval, the cache
+// ratio in (0, 1], a session active (ours at least).
+func TestE2E_LoadUnderTheWorkers(t *testing.T) {
+	e, bin := setup(t)
+	name := fmt.Sprintf("e2e-load-%d", time.Now().Unix())
+	stop := run(t, e, bin, name, "  discover:\n    schemas: [public]\n    exclude: [\"sqlflow_*\"]\n  rows: estimate")
+	defer stop()
+	bundles := await(t, e, name, "a bundle with rates", func(b []wire.Bundle) bool {
+		d := latest(b)
+		return d != nil && d.Load != nil && d.Load.TransactionsPerSecond != nil
+	})
+	l := latest(bundles).Load
+	assert.That(t, *l.TransactionsPerSecond > 0)
+	assert.NotNil(t, l.RowsReadPerSecond)
+	assert.That(t, *l.RowsReadPerSecond > 0)
+	assert.NotNil(t, l.CacheHitRatio)
+	assert.That(t, *l.CacheHitRatio > 0 && *l.CacheHitRatio <= 1)
+	assert.NotNil(t, l.SessionsActiveNow)
+	assert.That(t, *l.SessionsActiveNow >= 1)
+	assert.Nil(t, l.QueriesPerSecond) // Postgres, no statement store read
+	// The first bundle had the sample and no rates.
+	first := bundles[0].Database.Load
+	assert.NotNil(t, first)
+	assert.NotNil(t, first.SessionsActiveNow)
+	assert.Nil(t, first.TransactionsPerSecond)
+	// Nothing in any bundle is query text.
+	for _, b := range bundles {
+		assert.Equal(t, 0, len(b.Database.Queries))
+	}
+}
