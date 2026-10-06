@@ -68,6 +68,8 @@ tables:
   rows_exact_interval_seconds: 2
 report:
   statsd: ${SD}:8125
+  metrics: prometheus
+  listen: 0.0.0.0:8000
 YML
 DSN="postgres://rt:${PASS}@${PG}:5432/rt?sslmode=disable"
 
@@ -77,7 +79,11 @@ grep -q "ok: 1 databases" "$WORK/validate.txt"
 
 echo "run, 7s, then SIGTERM:"
 docker run -d --name "$RUN" --network "$NET" -e DBHEALTH_DSN="$DSN" -v "$WORK/dbhealth.yml:/etc/dbhealth/dbhealth.yml:ro" "$IMAGE" run -c /etc/dbhealth/dbhealth.yml >/dev/null
-sleep 7
+sleep 5
+# Scraped from the same network: /healthz and /metrics, as Prometheus would.
+docker run --rm --network "$NET" curlimages/curl:8.11.1 -s "http://${RUN}:8000/healthz" > "$WORK/healthz.txt" || true
+docker run --rm --network "$NET" curlimages/curl:8.11.1 -s "http://${RUN}:8000/metrics" > "$WORK/metrics.txt" || true
+sleep 2
 docker stop -t 10 "$RUN" >/dev/null
 docker logs "$RUN" > "$WORK/run.log" 2>&1
 cat "$WORK/run.log"
@@ -91,7 +97,10 @@ check "dbhealth.connections.max:100|g|#db:release-test"
 check "dbhealth.table.rows:250|g|#db:release-test,table:public.events"
 check "dbhealth.table.rows_exact:1|g|#db:release-test,table:public.events"
 check "dbhealth.table.newest_at:"
+grep -q '"status":"healthy"' "$WORK/healthz.txt" && echo "ok   /healthz" || { echo "MISSING /healthz"; fail=1; }
+grep -q 'dbhealth_probe_ok{db="release-test"} 1' "$WORK/metrics.txt" && echo "ok   /metrics probe_ok" || { echo "MISSING /metrics dbhealth_probe_ok"; fail=1; }
+grep -q 'dbhealth_table_rows{db="release-test",table="public.events"} 250' "$WORK/metrics.txt" && echo "ok   /metrics table_rows" || { echo "MISSING /metrics dbhealth_table_rows"; fail=1; }
 grep -q "dbhealth started" "$WORK/run.log" || { echo "MISSING started log line"; fail=1; }
 grep -q "dbhealth stopped" "$WORK/run.log" || { echo "MISSING clean stop on SIGTERM"; fail=1; }
-if grep -q "$PASS" "$WORK/run.log" "$WORK/statsd.txt"; then echo "LEAK: the password is in the output"; fail=1; fi
+if grep -q "$PASS" "$WORK/run.log" "$WORK/statsd.txt" "$WORK/metrics.txt"; then echo "LEAK: the password is in the output"; fail=1; fi
 exit $fail

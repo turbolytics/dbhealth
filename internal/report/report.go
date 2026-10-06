@@ -64,7 +64,12 @@ type Config struct {
 	To         string
 	Credential string
 	// StatsD is host:port for UDP gauges; empty sends none.
-	StatsD     string
+	StatsD string
+	// Metrics is the OpenTelemetry exporter: "prometheus" serves /metrics
+	// through Metrics(); "otlp" pushes every interval to OTLP, the
+	// collector's URL. Empty is none.
+	Metrics    string
+	OTLP       string
 	Interval   time.Duration
 	Version    string
 	ConfigHash string
@@ -80,6 +85,7 @@ type Reporter struct {
 	logURL      string
 	key         ed25519.PrivateKey
 	statsd      *statsd
+	otel        *metrics
 	interval    time.Duration
 	postTimeout time.Duration
 	version     string
@@ -142,7 +148,18 @@ func New(c Config) (*Reporter, error) {
 		}
 		r.statsd = s
 	}
+	m, err := newMetrics(c.Metrics, c.OTLP, r.interval, r.log)
+	if err != nil {
+		return nil, fmt.Errorf("report.metrics: %w", err)
+	}
+	r.otel = m
 	return r, nil
+}
+
+// Metrics is the /metrics handler for the Prometheus exporter, nil when
+// no exporter, or another, is configured.
+func (r *Reporter) Metrics() http.Handler {
+	return r.otel.handler()
 }
 
 // seed draws the jitter seed from the OS, as the engine does: a device
@@ -201,11 +218,14 @@ func (r *Reporter) each(ctx context.Context, exit *wire.Exit) {
 	wg.Wait()
 }
 
-// Close releases the StatsD socket.
+// Close releases the StatsD socket and flushes the OTLP exporter.
 func (r *Reporter) Close() {
 	if r.statsd != nil {
 		r.statsd.close()
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r.otel.shutdown(ctx)
 }
 
 // post collects one instance's section, wraps it in a bundle, and sends
@@ -217,6 +237,9 @@ func (r *Reporter) post(ctx context.Context, inst Instance, exit *wire.Exit) {
 	cancelCollect()
 	if r.statsd != nil {
 		r.statsd.send(inst.Name, &d)
+	}
+	if r.otel != nil {
+		r.otel.set(inst.Name, &d, r.now())
 	}
 	if r.url == "" {
 		return

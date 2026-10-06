@@ -82,11 +82,18 @@ type StaticTable struct {
 	Rows string
 }
 
-// Report is where the facts go: control, StatsD, or both.
+// Report is where the facts go: control, StatsD, an OpenTelemetry
+// exporter, any of them.
 type Report struct {
 	To         string
 	Credential string
 	StatsD     string
+	// Metrics is the OpenTelemetry exporter: "prometheus" serves /metrics
+	// on Listen; "otlp" pushes every interval to OTLP.
+	Metrics string
+	OTLP    string
+	// Listen is the address of /metrics and /healthz; ":8000" by default.
+	Listen string
 }
 
 // The file's shape as written. Intervals are pointers so that a key that is
@@ -113,8 +120,19 @@ type file struct {
 		FreshnessIntervalSeconds *int   `yaml:"freshness_interval_seconds"`
 		RowsExactIntervalSeconds *int   `yaml:"rows_exact_interval_seconds"`
 	} `yaml:"tables"`
-	Report Report `yaml:"report"`
+	Report struct {
+		To         string `yaml:"to"`
+		Credential string `yaml:"credential"`
+		StatsD     string `yaml:"statsd"`
+		Metrics    string `yaml:"metrics"`
+		OTLP       string `yaml:"otlp"`
+		Listen     string `yaml:"listen"`
+	} `yaml:"report"`
 }
+
+// DefaultListen is where /metrics and /healthz answer when the file names
+// nothing: sql-flow's port, so the two run the same way.
+const DefaultListen = ":8000"
 
 // Kinds v1 knows, and whether it ships them.
 var kinds = map[string]bool{
@@ -219,7 +237,10 @@ func expandEnv(v reflect.Value) error {
 // resolve turns the file as written into a File with the defaults applied.
 // A written interval must be positive; an absent one takes the default.
 func (in *file) resolve() (*File, error) {
-	f := &File{Databases: in.Databases, Report: in.Report}
+	f := &File{Databases: in.Databases, Report: Report(in.Report)}
+	if f.Report.Listen == "" {
+		f.Report.Listen = DefaultListen
+	}
 	var err error
 	if f.Probe.IntervalSeconds, err = interval(in.Probe.IntervalSeconds, 60, "probe.interval_seconds"); err != nil {
 		return nil, err
@@ -283,6 +304,10 @@ const DefaultReportTo = "https://ingest.turbolytics.io"
 //	DBHEALTH_NAME       the instance name; defaults to the database's name
 //	DBHEALTH_CLUSTER    the cluster; defaults to the name
 //	DBHEALTH_REPORT_TO  control's ingest; defaults to DefaultReportTo
+//	DBHEALTH_STATSD     host:port for StatsD gauges
+//	DBHEALTH_METRICS    prometheus or otlp
+//	DBHEALTH_OTLP       the OTLP collector, as http://collector:4318
+//	DBHEALTH_LISTEN     where /metrics and /healthz answer; defaults to :8000
 func FromEnv() (*File, error) {
 	dsn := os.Getenv("DBHEALTH_DSN")
 	if dsn == "" {
@@ -310,11 +335,13 @@ func FromEnv() (*File, error) {
 				Cluster: os.Getenv("DBHEALTH_CLUSTER"),
 			},
 		},
-		Report: Report{
-			To:         cmp.Or(os.Getenv("DBHEALTH_REPORT_TO"), DefaultReportTo),
-			Credential: os.Getenv("DBHEALTH_KEY"),
-		},
 	}
+	in.Report.To = cmp.Or(os.Getenv("DBHEALTH_REPORT_TO"), DefaultReportTo)
+	in.Report.Credential = os.Getenv("DBHEALTH_KEY")
+	in.Report.StatsD = os.Getenv("DBHEALTH_STATSD")
+	in.Report.Metrics = os.Getenv("DBHEALTH_METRICS")
+	in.Report.OTLP = os.Getenv("DBHEALTH_OTLP")
+	in.Report.Listen = os.Getenv("DBHEALTH_LISTEN")
 	f, err := in.resolve()
 	if err != nil {
 		return nil, err
@@ -399,8 +426,17 @@ func (f *File) validate() error {
 			t.RowsExactIntervalSeconds, f.Probe.IntervalSeconds)
 	}
 	r := f.Report
-	if r.To == "" && r.StatsD == "" {
-		return errors.New("report: set report.to, report.statsd, or both")
+	if r.To == "" && r.StatsD == "" && r.Metrics == "" {
+		return errors.New("report: set report.to, report.statsd or report.metrics; any of them")
+	}
+	switch r.Metrics {
+	case "", "prometheus":
+	case "otlp":
+		if r.OTLP == "" {
+			return errors.New("report.otlp: is required when report.metrics is otlp; the collector, as http://collector:4318")
+		}
+	default:
+		return fmt.Errorf("report.metrics: %q; must be prometheus or otlp", r.Metrics)
 	}
 	if r.To != "" && r.Credential == "" {
 		return errors.New("report.credential: is required when report.to is set")
