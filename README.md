@@ -19,7 +19,7 @@ databases:
     dsn: "{{ DBHEALTH_PRIMARY_DSN }}"
     name: billing-primary
 report:
-  to: https://control.turbolytics.io
+  to: https://ingest.turbolytics.io/v1/turbostats
   credential: "{{ TURBOSTATS_CREDENTIAL }}"
 EOF
 
@@ -61,7 +61,7 @@ tables:
   rows_exact_interval_seconds: 3600
 
 report:
-  to: https://control.turbolytics.io
+  to: https://ingest.turbolytics.io/v1/turbostats
   credential: "{{ TURBOSTATS_CREDENTIAL }}"
   # statsd: localhost:8125            # the same facts as gauges
 ```
