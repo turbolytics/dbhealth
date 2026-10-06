@@ -80,6 +80,20 @@ func datagrams(db string, d *wire.Database) []string {
 		if t.NewestAt != nil {
 			g("table.newest_at", t.NewestAt.Unix(), tags)
 		}
+		if t.DeadRows != nil {
+			g("table.dead_rows", *t.DeadRows, tags)
+		}
+		if t.SeqScansPerSecond != nil {
+			g("table.seq_scans_per_second", *t.SeqScansPerSecond, tags)
+		}
+		if t.IndexScansPerSecond != nil {
+			g("table.index_scans_per_second", *t.IndexScansPerSecond, tags)
+		}
+	}
+	if l := d.Load; l != nil {
+		for _, f := range loadFields(l) {
+			g("load."+f.name, f.value, base)
+		}
 	}
 	if r := d.Replication; r != nil {
 		if r.LagSeconds != nil {
@@ -122,6 +136,43 @@ func gauge(v any) string {
 		return strconv.Itoa(n)
 	}
 	return fmt.Sprint(v)
+}
+
+// loadField is one load gauge: the spec's name and its value, when set.
+type loadField struct {
+	name  string
+	value any
+}
+
+// loadFields is every load field that is present, in the spec's order,
+// for the StatsD and OpenTelemetry writers alike.
+func loadFields(l *wire.DatabaseLoad) []loadField {
+	var out []loadField
+	i := func(name string, v *int) {
+		if v != nil {
+			out = append(out, loadField{name, *v})
+		}
+	}
+	f := func(name string, v *float64) {
+		if v != nil {
+			out = append(out, loadField{name, *v})
+		}
+	}
+	i("sessions_active_now", l.SessionsActiveNow)
+	i("sessions_idle_in_transaction_now", l.SessionsIdleInTransactionNow)
+	i("sessions_waiting_now", l.SessionsWaitingNow)
+	i("queries_queued_now", l.QueriesQueuedNow)
+	f("longest_query_seconds", l.LongestQuerySeconds)
+	f("queries_per_second", l.QueriesPerSecond)
+	f("transactions_per_second", l.TransactionsPerSecond)
+	f("rollbacks_per_second", l.RollbacksPerSecond)
+	f("rows_read_per_second", l.RowsReadPerSecond)
+	f("rows_written_per_second", l.RowsWrittenPerSecond)
+	f("bytes_scanned_per_second", l.BytesScannedPerSecond)
+	f("cache_hit_ratio", l.CacheHitRatio)
+	f("deadlocks_per_second", l.DeadlocksPerSecond)
+	f("temp_bytes_per_second", l.TempBytesPerSecond)
+	return out
 }
 
 func boolInt(v bool) int {

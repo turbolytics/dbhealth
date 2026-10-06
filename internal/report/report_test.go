@@ -592,3 +592,92 @@ func TestMetrics_OTLPFailureIsLoggedOnce(t *testing.T) {
 	assert.Equal(t, 1, len(warns))
 	assert.That(t, strings.Contains(warns[0].Message, "metrics export is failing"))
 }
+
+// Load: every field a gauge, absent fields absent.
+
+func loaded(d wire.Database) wire.Database {
+	n, w := 12, 1
+	tps, rr, ratio, longest := 182.4, 90210.0, 0.993, 41.2
+	dead, seq := int64(1203), 0.1
+	d.Load = &wire.DatabaseLoad{SessionsActiveNow: &n, SessionsWaitingNow: &w, LongestQuerySeconds: &longest,
+		TransactionsPerSecond: &tps, RowsReadPerSecond: &rr, CacheHitRatio: &ratio}
+	d.Tables[0].DeadRows = &dead
+	d.Tables[0].SeqScansPerSecond = &seq
+	return d
+}
+
+func TestStatsD_LoadGauges(t *testing.T) {
+	d := loaded(database(okAt)(context.Background()))
+	lines := strings.Split(strings.TrimSpace(strings.Join(datagrams("db", &d), "")), "\n")
+	has := func(prefix string) bool {
+		for _, l := range lines {
+			if strings.HasPrefix(l, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{
+		"dbhealth.load.sessions_active_now:12|g|#db:db",
+		"dbhealth.load.sessions_waiting_now:1|g|#db:db",
+		"dbhealth.load.longest_query_seconds:41.2|g|#db:db",
+		"dbhealth.load.transactions_per_second:182.4|g|#db:db",
+		"dbhealth.load.rows_read_per_second:90210|g|#db:db",
+		"dbhealth.load.cache_hit_ratio:0.993|g|#db:db",
+		"dbhealth.table.dead_rows:1203|g|#db:db,table:public.usage_per_minute",
+		"dbhealth.table.seq_scans_per_second:0.1|g|#db:db,table:public.usage_per_minute",
+	} {
+		if !has(want) {
+			t.Errorf("no gauge %q in:\n%s", want, strings.Join(lines, "\n"))
+		}
+	}
+	for _, absent := range []string{"dbhealth.load.rows_written_per_second", "dbhealth.load.queries_per_second",
+		"dbhealth.load.sessions_idle_in_transaction_now", "dbhealth.table.index_scans_per_second"} {
+		assert.False(t, has(absent))
+	}
+	// No load at all: no load gauges.
+	plain := database(okAt)(context.Background())
+	for _, l := range strings.Split(strings.Join(datagrams("db", &plain), ""), "\n") {
+		assert.False(t, strings.HasPrefix(l, "dbhealth.load."))
+	}
+}
+
+func TestMetrics_LoadSeries(t *testing.T) {
+	core, _ := observer.New(zap.DebugLevel)
+	with := true
+	collect := func(ctx context.Context) wire.Database {
+		d := database(okAt)(ctx)
+		if with {
+			return loaded(d)
+		}
+		return d
+	}
+	r, err := New(Config{Metrics: "prometheus", Interval: time.Minute, Log: zap.New(core), Now: fixedNow,
+		Instances: []Instance{{Name: "x", Collect: collect}}})
+	assert.NoError(t, err)
+	r.Once(context.Background())
+	body := scrape(t, r)
+	for _, want := range []string{
+		`dbhealth_load_sessions_active_now{db="x"} 12`,
+		`dbhealth_load_sessions_waiting_now{db="x"} 1`,
+		`dbhealth_load_longest_query_seconds{db="x"} 41.2`,
+		`dbhealth_load_transactions_per_second{db="x"} 182.4`,
+		`dbhealth_load_rows_read_per_second{db="x"} 90210`,
+		`dbhealth_load_cache_hit_ratio{db="x"} 0.993`,
+		`dbhealth_table_dead_rows{db="x",table="public.usage_per_minute"} 1203`,
+		`dbhealth_table_seq_scans_per_second{db="x",table="public.usage_per_minute"} 0.1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("no series %q in:\n%s", want, body)
+		}
+	}
+	assert.False(t, strings.Contains(body, "dbhealth_load_rows_written_per_second{"))
+	assert.False(t, strings.Contains(body, "dbhealth_load_queries_per_second{"))
+	assert.False(t, strings.Contains(body, "dbhealth_table_index_scans_per_second{"))
+	// The next interval without load: the series are gone, not stale.
+	with = false
+	r.Once(context.Background())
+	body = scrape(t, r)
+	assert.False(t, strings.Contains(body, "dbhealth_load_"))
+	assert.False(t, strings.Contains(body, "dbhealth_table_dead_rows{"))
+}

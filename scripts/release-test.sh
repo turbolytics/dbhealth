@@ -79,7 +79,8 @@ grep -q "ok: 1 databases" "$WORK/validate.txt"
 
 echo "run, 7s, then SIGTERM:"
 docker run -d --name "$RUN" --network "$NET" -e DBHEALTH_DSN="$DSN" -v "$WORK/dbhealth.yml:/etc/dbhealth/dbhealth.yml:ro" "$IMAGE" run -c /etc/dbhealth/dbhealth.yml >/dev/null
-sleep 5
+# Two intervals and a little, so the second scrape has rates.
+sleep 6
 # Scraped from the same network: /healthz and /metrics, as Prometheus would.
 docker run --rm --network "$NET" curlimages/curl:8.11.1 -s "http://${RUN}:8000/healthz" > "$WORK/healthz.txt" || true
 docker run --rm --network "$NET" curlimages/curl:8.11.1 -s "http://${RUN}:8000/metrics" > "$WORK/metrics.txt" || true
@@ -100,6 +101,8 @@ check "dbhealth.table.newest_at:"
 grep -q '"status":"healthy"' "$WORK/healthz.txt" && echo "ok   /healthz" || { echo "MISSING /healthz"; fail=1; }
 grep -q 'dbhealth_probe_ok{db="release-test"} 1' "$WORK/metrics.txt" && echo "ok   /metrics probe_ok" || { echo "MISSING /metrics dbhealth_probe_ok"; fail=1; }
 grep -q 'dbhealth_table_rows{db="release-test",table="public.events"} 250' "$WORK/metrics.txt" && echo "ok   /metrics table_rows" || { echo "MISSING /metrics dbhealth_table_rows"; fail=1; }
+grep -q 'dbhealth_load_sessions_active_now{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics load sample" || { echo "MISSING /metrics dbhealth_load_sessions_active_now"; fail=1; }
+grep -q 'dbhealth_load_transactions_per_second{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics load rate" || { echo "MISSING /metrics dbhealth_load_transactions_per_second (needs two intervals)"; fail=1; }
 grep -q "dbhealth started" "$WORK/run.log" || { echo "MISSING started log line"; fail=1; }
 grep -q "dbhealth stopped" "$WORK/run.log" || { echo "MISSING clean stop on SIGTERM"; fail=1; }
 if grep -q "$PASS" "$WORK/run.log" "$WORK/statsd.txt" "$WORK/metrics.txt"; then echo "LEAK: the password is in the output"; fail=1; fi

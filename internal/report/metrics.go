@@ -159,6 +159,7 @@ func (m *metrics) instruments() error {
 		{"dbhealth_table_rows_exact", "1 when dbhealth_table_rows is a count(*)"},
 		{"dbhealth_table_size_bytes", "the table on disk"},
 		{"dbhealth_table_newest_at_seconds", "max of the freshness column, Unix seconds"},
+		{"dbhealth_table_dead_rows", "rows deleted or updated and not yet reclaimed"},
 		{"dbhealth_collection_queries", "queries the last interval ran"},
 		{"dbhealth_collection_duration_ms", "what the last interval cost"},
 		{"dbhealth_collection_errors", "queries that failed in the last interval"},
@@ -168,6 +169,37 @@ func (m *metrics) instruments() error {
 			return err
 		}
 	}
+	// Load, every field a float gauge so one callback serves ints and
+	// rates alike; the integer samples marshal as integers anyway.
+	loadGauges := map[string]metric.Float64ObservableGauge{}
+	for _, it := range [][2]string{
+		{"sessions_active_now", "sessions executing a statement"},
+		{"sessions_idle_in_transaction_now", "sessions idle inside an open transaction"},
+		{"sessions_waiting_now", "sessions blocked on a lock, a queue or a resource"},
+		{"queries_queued_now", "queries waiting to start"},
+		{"longest_query_seconds", "age of the oldest statement still running"},
+		{"queries_per_second", "the interval's queries"},
+		{"transactions_per_second", "the interval's commits"},
+		{"rollbacks_per_second", "the interval's rollbacks"},
+		{"rows_read_per_second", "rows returned to clients"},
+		{"rows_written_per_second", "rows inserted, updated and deleted"},
+		{"bytes_scanned_per_second", "storage read to answer queries"},
+		{"cache_hit_ratio", "the interval's reads served from memory, 0..1"},
+		{"deadlocks_per_second", "the interval's deadlocks"},
+		{"temp_bytes_per_second", "sorts and hashes spilling to disk"},
+	} {
+		if loadGauges[it[0]], err = f64("dbhealth_load_"+it[0], it[1]); err != nil {
+			return err
+		}
+	}
+	tableSeq, err := f64("dbhealth_table_seq_scans_per_second", "whole-table reads")
+	if err != nil {
+		return err
+	}
+	tableIdx, err := f64("dbhealth_table_index_scans_per_second", "index reads")
+	if err != nil {
+		return err
+	}
 	lag, err := f64("dbhealth_replication_lag_seconds", "how far behind this endpoint is")
 	if err != nil {
 		return err
@@ -176,8 +208,11 @@ func (m *metrics) instruments() error {
 	if err != nil {
 		return err
 	}
-	all := []metric.Observable{lag, replicaLag}
+	all := []metric.Observable{lag, replicaLag, tableSeq, tableIdx}
 	for _, v := range g {
+		all = append(all, v)
+	}
+	for _, v := range loadGauges {
 		all = append(all, v)
 	}
 	_, err = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
@@ -214,6 +249,25 @@ func (m *metrics) instruments() error {
 				o.ObserveInt64(g["dbhealth_table_size_bytes"], t.SizeBytes, tags)
 				if t.NewestAt != nil {
 					o.ObserveInt64(g["dbhealth_table_newest_at_seconds"], t.NewestAt.Unix(), tags)
+				}
+				if t.DeadRows != nil {
+					o.ObserveInt64(g["dbhealth_table_dead_rows"], *t.DeadRows, tags)
+				}
+				if t.SeqScansPerSecond != nil {
+					o.ObserveFloat64(tableSeq, *t.SeqScansPerSecond, tags)
+				}
+				if t.IndexScansPerSecond != nil {
+					o.ObserveFloat64(tableIdx, *t.IndexScansPerSecond, tags)
+				}
+			}
+			if d.Load != nil {
+				for _, f := range loadFields(d.Load) {
+					switch v := f.value.(type) {
+					case int:
+						o.ObserveFloat64(loadGauges[f.name], float64(v), base)
+					case float64:
+						o.ObserveFloat64(loadGauges[f.name], v, base)
+					}
 				}
 			}
 			if r := d.Replication; r != nil {
