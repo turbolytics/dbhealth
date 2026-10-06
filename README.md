@@ -1,45 +1,67 @@
 # dbhealth
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/dbhealth)](https://hub.docker.com/r/turbolytics/dbhealth) · `docker pull turbolytics/dbhealth`
+[![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/dbhealth)](https://hub.docker.com/r/turbolytics/dbhealth)
 
-Is my database serving? How close is it to its limits? Are its tables
-current? `dbhealth` asks one Postgres those questions every minute and
-reports the answers to [control](https://control.turbolytics.io),
-beside your pipelines.
+**Monitor your database's health.** Is it serving? How close is it to its
+limits? Are its tables current? One container, one connection string,
+answers every minute in [control](https://control.turbolytics.io),
+Prometheus, Datadog, or anything that speaks OpenTelemetry.
 
-## One minute
+## Quick start
 
 ```bash
-git clone https://github.com/turbolytics/dbhealth && cd dbhealth && make build
-
-export DBHEALTH_PRIMARY_DSN='postgres://user:password@pg.internal:5432/billing'
-export TURBOSTATS_CREDENTIAL='sfc_...'     # from control.turbolytics.io: your org's credential
-
-cat > dbhealth.yml <<'EOF'
-databases:
-  - kind: postgres
-    dsn: "{{ DBHEALTH_PRIMARY_DSN }}"
-    name: billing-primary
-report:
-  to: https://ingest.turbolytics.io/v1/turbostats
-  credential: "{{ TURBOSTATS_CREDENTIAL }}"
-EOF
-
-./bin/dbhealth validate -c dbhealth.yml
-ok: 1 databases
-
-./bin/dbhealth run -c dbhealth.yml
+docker run -d --name dbhealth \
+  -e DBHEALTH_DSN='postgres://user:password@pg.internal:5432/billing' \
+  -e DBHEALTH_KEY='sfc_...' \
+  turbolytics/dbhealth
 ```
 
-Everything else defaults: the first 50 tables by name, in every schema
-but the catalog, probed once a minute, row counts estimated.
+`DBHEALTH_KEY` is your org's credential from [control](https://control.turbolytics.io).
+A minute later control shows `billing`: serving, 3 ms; 18 of 100
+connections; 2.1 GB; `public.events` newest row 12 s ago, 48,213,904 rows.
 
-A minute later control shows `billing-primary`: serving, 3ms; 18 of 100
-connections; 2.1 GB; `public.events` newest row 12s ago, 48,213,904 rows.
+**No control yet?** Point it at your own tools instead:
 
-## The config
+```bash
+docker run -d -p 8000:8000 \
+  -e DBHEALTH_DSN='postgres://user:password@pg.internal:5432/billing' \
+  -e DBHEALTH_METRICS=prometheus \
+  turbolytics/dbhealth
 
-The full file, `examples/dbhealth.yml`, with a primary and a replica:
+curl -s localhost:8000/metrics | grep dbhealth_probe_ok
+dbhealth_probe_ok{db="billing"} 1
+```
+
+`-e DBHEALTH_METRICS=otlp -e DBHEALTH_OTLP=http://datadog-agent:4318` pushes
+the same to the Datadog agent, Grafana Alloy, or any OpenTelemetry
+collector. `/healthz` is on the same port for your supervisor.
+
+## What you get
+
+Facts, every minute, per database. Control, Prometheus and OTLP carry the
+same names; StatsD the same with dots.
+
+| | metric | from |
+|---|---|---|
+| **serving?** | `dbhealth_probe_ok`, `dbhealth_probe_latency_ms`, `dbhealth_probe_consecutive_failures` | one `SELECT 1`, timed |
+| **near its limits?** | `dbhealth_connections_used` / `_max` / `_waiting`, `dbhealth_size_bytes`, `dbhealth_oldest_transaction_seconds`, `dbhealth_memory_shared_buffers_bytes` | `pg_stat_activity`, `pg_database_size` |
+| **tables current?** | `dbhealth_table_newest_at_seconds`, `dbhealth_table_rows`, `dbhealth_table_rows_exact`, `dbhealth_table_size_bytes` — labelled `table` | `max(timestamp column)`, `n_live_tup` or `count(*)` |
+| **replication** | `dbhealth_replication_lag_seconds`, per-replica lag | `pg_stat_replication` |
+| **what it cost** | `dbhealth_collection_queries`, `_duration_ms`, `_errors` | counted |
+
+Every series carries `db`. A field the database could not give is absent,
+not zero: a role without `pg_read_all_stats` gets an error naming the
+grant, not a connection count that is wrong.
+
+**What it costs the database:** one `SELECT 1`, four catalog reads, and per
+table one estimate and one `max()`, every interval. `count(*)` only where
+you ask, once an hour.
+
+## Config
+
+The quick start is the defaults: every table, up to 50, probed
+once a minute, rows estimated. A file is the same with more than one
+database, chosen tables, or exact counts:
 
 ```yaml
 databases:
@@ -47,17 +69,25 @@ databases:
     dsn: "{{ DBHEALTH_PRIMARY_DSN }}"   # from the environment; control sees host:port/db only
     name: billing-primary
     cluster: billing
+  - kind: postgres
+    dsn: "{{ DBHEALTH_REPLICA_A_DSN }}"
+    name: billing-replica-a
+    cluster: billing
 
 probe:
-  interval_seconds: 60                # one probe and one report per database per minute
+  interval_seconds: 60
   timeout_seconds: 5
 
 tables:
   discover:                           # every table in these schemas, up to max_tables
     schemas: [public]
     exclude: ["sqlflow_*", "*_tmp"]
-    freshness_columns: [updated_at, created_at, minute, ts]
+    freshness_columns: [updated_at, created_at, minute, ts]   # the first one a table has
     max_tables: 50
+  # static:                           # or name them, so a schema change cannot add
+  #   - name: public.usage_per_minute #   a two-billion-row table by accident
+  #     freshness_column: minute
+  #     rows: exact
   rows: estimate                      # estimate (free) or exact (count(*), once an hour)
   freshness_interval_seconds: 60
   rows_exact_interval_seconds: 3600
@@ -65,75 +95,36 @@ tables:
 report:
   to: https://ingest.turbolytics.io/v1/turbostats
   credential: "{{ TURBOSTATS_CREDENTIAL }}"
-  # statsd: localhost:8125            # the same facts as gauges
+  # metrics: prometheus               # /metrics and /healthz on :8000
+  # metrics: otlp                     # or pushed every interval
+  # otlp: http://collector:4318
+  # statsd: localhost:8125
 ```
 
-`discover` is the one-minute path: point it at a database and every table
-is watched, its freshness from the first of `freshness_columns` it has. For
-production, name the tables instead, so a schema change cannot add a
-two-billion-row table to the watch list by accident:
-
-```yaml
-tables:
-  static:
-    - name: public.usage_per_minute
-      freshness_column: minute
-      rows: exact
-    - name: public.events
-      freshness_column: created_at
+```bash
+dbhealth validate -c dbhealth.yml     # ok: 2 databases
+dbhealth run -c dbhealth.yml
 ```
 
-## Prometheus, Datadog, OpenTelemetry
+Each replica is its own entry: a primary that answers says nothing about
+the replica your application reads from. `cluster` groups them in control.
 
-The same facts go wherever you watch, through OpenTelemetry:
+| environment (no file) | |
+|---|---|
+| `DBHEALTH_DSN` | the connection string; required |
+| `DBHEALTH_KEY` | the control credential |
+| `DBHEALTH_NAME`, `DBHEALTH_CLUSTER` | default to the database's name |
+| `DBHEALTH_METRICS` | `prometheus` or `otlp` |
+| `DBHEALTH_OTLP`, `DBHEALTH_LISTEN`, `DBHEALTH_STATSD` | the collector; the listen address (`:8000`); StatsD |
 
-| | config | gets you |
-|---|---|---|
-| Prometheus | `metrics: prometheus` or `dbhealth run --metrics prometheus` | `/metrics` and `/healthz` on `:8000`: Grafana, Alertmanager, anything that scrapes |
-| OTLP | `metrics: otlp` + `otlp: http://collector:4318` | a push every interval: the Datadog agent's OTLP receiver, Grafana Alloy, Honeycomb, any collector |
-| StatsD | `statsd: localhost:8125` | DogStatsD gauges, Datadog-style tags |
+The connection string never leaves the process. What is sent is
+`host:port/database`.
 
-One name set everywhere: `dbhealth_probe_ok{db}`, `dbhealth_connections_used{db}`,
-`dbhealth_table_rows{db,table}`, `dbhealth_table_newest_at_seconds{db,table}`,
-`dbhealth_collection_errors{db}`. A field the database could not give is
-absent, not zero.
+## Build it yourself
 
-## What it costs the database
-
-Every interval: one `SELECT 1`, four catalog reads, and per table one
-estimate and one `max(column)`. `count(*)` only where you ask, once an hour.
-Each report says what it cost, `collection.queries` and
-`collection.duration_ms`, so you can see it.
-
-## What it sends
-
-Facts, never judgments: timestamps, counts and limits. Control decides what
-is stale or full. The connection string never leaves the process; the report
-carries `host:port/database`.
-
-```json
-{
-  "database": {
-    "kind": "postgres",
-    "target": "pg.internal:5432/billing",
-    "probe": {"ok": true, "latency_ms": 3, "last_ok_at": "2026-10-05T12:00:00Z", "consecutive_failures": 0},
-    "resources": {"connections": {"used": 18, "max": 100, "waiting": 0}, "size_bytes": 2147483648},
-    "tables": [
-      {"name": "public.events", "freshness_column": "created_at", "newest_at": "2026-10-05T11:59:48Z",
-       "rows": 48213904, "rows_exact": false, "size_bytes": 9126805504, "checked_at": "2026-10-05T12:00:00Z"}
-    ],
-    "collection": {"queries": 9, "duration_ms": 12, "errors": []}
-  }
-}
+```bash
+make build && ./bin/dbhealth version
+make test-short            # unit, no Docker
+make test-integration      # against postgres:18 in testcontainers
+make release-test          # the image, run against Postgres
 ```
-
-A query that fails lands in `collection.errors` with its table; the rest of
-the report still sends. A role without `pg_read_all_stats` gets
-`pg_stat_activity: 3 other sessions hidden from this role; grant pg_read_all_stats`
-rather than a connection count that is wrong.
-
-## Replicas
-
-One entry per endpoint, replicas included: a primary that answers says
-nothing about the replica your application reads from. `cluster` groups
-them in control.
