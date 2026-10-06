@@ -259,30 +259,42 @@ func excluded(table string, globs []string) bool {
 	return false
 }
 
-// Table is one table's size, row count and, when asked, its newest
-// timestamp and an exact count. The estimate is pg_stat_user_tables'
-// n_live_tup; exact is count(*). A table that is gone is an error naming
-// it.
-func (c *Client) Table(ctx context.Context, t config.StaticTable, fresh, exact bool) (wire.DatabaseTable, error) {
+// Table is one table's size, row count, dead rows and scan counters and,
+// when asked, its newest timestamp and an exact count. The estimate is
+// pg_stat_user_tables' n_live_tup; exact is count(*). A table that is
+// gone is an error naming it.
+func (c *Client) Table(ctx context.Context, t config.StaticTable, fresh, exact bool) (wire.DatabaseTable, source.TableCounters, error) {
 	schema, table := splitName(t.Name)
 	name := schema + "." + table
 	out := wire.DatabaseTable{Name: name, FreshnessColumn: t.FreshnessColumn}
+	counters := source.TableCounters{DeadRows: -1, SeqScans: -1, IdxScans: -1}
 
-	var live *int64
+	var live, dead, seq, idx *int64
 	var size int64
 	var vacuum *time.Time
-	err := c.row(ctx, `SELECT s.n_live_tup, pg_total_relation_size(c.oid), GREATEST(s.last_vacuum, s.last_autovacuum)
+	err := c.row(ctx, `SELECT s.n_live_tup, pg_total_relation_size(c.oid), GREATEST(s.last_vacuum, s.last_autovacuum),
+		s.n_dead_tup, s.seq_scan, s.idx_scan
 		FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 		LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
-		WHERE n.nspname = $1 AND c.relname = $2`, []any{schema, table}, &live, &size, &vacuum)
+		WHERE n.nspname = $1 AND c.relname = $2`, []any{schema, table}, &live, &size, &vacuum, &dead, &seq, &idx)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return out, fmt.Errorf("%s: no such table", name)
+		return out, counters, fmt.Errorf("%s: no such table", name)
 	}
 	if err != nil {
-		return out, fmt.Errorf("%s: %s", name, sqlError(err))
+		return out, counters, fmt.Errorf("%s: %s", name, sqlError(err))
 	}
 	out.SizeBytes = size
 	out.Rows = live
+	if dead != nil {
+		counters.DeadRows = *dead
+		out.DeadRows = dead
+	}
+	if seq != nil {
+		counters.SeqScans = *seq
+	}
+	if idx != nil {
+		counters.IdxScans = *idx
+	}
 	if vacuum != nil {
 		v := vacuum.UTC()
 		out.LastVacuumAt = &v
@@ -293,7 +305,7 @@ func (c *Client) Table(ctx context.Context, t config.StaticTable, fresh, exact b
 		col := pgx.Identifier{t.FreshnessColumn}.Sanitize()
 		if err := c.row(ctx, `SELECT max(`+col+`) FROM `+ident, nil, &newest); err != nil {
 			out.CheckedAt = time.Now().UTC()
-			return out, fmt.Errorf("%w: %s: max(%s): %s", ErrPartial, name, t.FreshnessColumn, sqlError(err))
+			return out, counters, fmt.Errorf("%w: %s: max(%s): %s", ErrPartial, name, t.FreshnessColumn, sqlError(err))
 		}
 		if newest != nil {
 			n := newest.UTC()
@@ -304,13 +316,13 @@ func (c *Client) Table(ctx context.Context, t config.StaticTable, fresh, exact b
 		var n int64
 		if err := c.row(ctx, `SELECT count(*) FROM `+ident, nil, &n); err != nil {
 			out.CheckedAt = time.Now().UTC()
-			return out, fmt.Errorf("%w: %s: count(*): %s", ErrPartial, name, sqlError(err))
+			return out, counters, fmt.Errorf("%w: %s: count(*): %s", ErrPartial, name, sqlError(err))
 		}
 		out.Rows = &n
 		out.RowsExact = true
 	}
 	out.CheckedAt = time.Now().UTC()
-	return out, nil
+	return out, counters, nil
 }
 
 // splitName is schema and table from "schema.table"; a bare name is in

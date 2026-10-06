@@ -6,7 +6,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
-	github.com/turbolytics/sql-flow v1.2.1-0.20261006001419-778771d1441f
+	github.com/turbolytics/sql-flow v1.2.1-0.20261006105252-183232d4616e
 	github.com/zeebo/assert v1.3.1
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.47.0
