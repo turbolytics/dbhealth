@@ -14,6 +14,7 @@ import (
 
 	"github.com/turbolytics/dbhealth/internal/config"
 	"github.com/turbolytics/dbhealth/internal/postgres"
+	"github.com/turbolytics/dbhealth/internal/source"
 )
 
 // fake is a source that answers from fields and counts what was asked.
@@ -61,7 +62,12 @@ func (f *fake) Discover(ctx context.Context, d config.Discover) ([]config.Static
 	return f.tables, f.dropped, nil
 }
 
-func (f *fake) Table(ctx context.Context, t config.StaticTable, fresh, exact bool) (wire.DatabaseTable, error) {
+func (f *fake) Load(ctx context.Context) (source.Sample, source.Counters, []wire.DatabaseError) {
+	f.queries += 2
+	return source.Sample{}, source.Counters{Queries: -1, BytesScanned: -1}, nil
+}
+
+func (f *fake) Table(ctx context.Context, t config.StaticTable, fresh, exact bool) (wire.DatabaseTable, source.TableCounters, error) {
 	f.queries++
 	if fresh {
 		f.queries++
@@ -72,20 +78,20 @@ func (f *fake) Table(ctx context.Context, t config.StaticTable, fresh, exact boo
 		f.exacts[t.Name]++
 	}
 	if err := f.tableErr[t.Name]; err != nil {
-		return wire.DatabaseTable{}, err
+		return wire.DatabaseTable{}, source.TableCounters{}, err
 	}
 	rows := int64(100 + f.exacts[t.Name])
 	// CheckedAt is the source's own clock after the query, 300ms late, as
 	// a real query's is; the collector must schedule on its own reading.
 	out := wire.DatabaseTable{Name: t.Name, FreshnessColumn: t.FreshnessColumn, Rows: &rows, RowsExact: exact, SizeBytes: 4096, CheckedAt: f.now().Add(300 * time.Millisecond)}
 	if err := f.partial[t.Name]; err != nil {
-		return out, fmt.Errorf("%w: %w", postgres.ErrPartial, err)
+		return out, source.TableCounters{}, fmt.Errorf("%w: %w", postgres.ErrPartial, err)
 	}
 	if fresh && t.FreshnessColumn != "" {
 		at := f.now()
 		out.NewestAt = &at
 	}
-	return out, nil
+	return out, source.TableCounters{DeadRows: -1, SeqScans: -1, IdxScans: -1}, nil
 }
 
 func (f *fake) Replication(ctx context.Context) (*wire.DatabaseReplication, error) {

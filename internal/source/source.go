@@ -13,6 +13,35 @@ import (
 	"github.com/turbolytics/dbhealth/internal/config"
 )
 
+// Counters is one reading of the system's cumulative counters, the
+// collector's input for rates: a count since the stats began, or -1 when
+// the kind does not have it (Postgres has no Queries without
+// pg_stat_statements, which is not read). At is the reading's own clock.
+type Counters struct {
+	At                          time.Time
+	Queries, Commits, Rollbacks int64
+	RowsRead, RowsWritten       int64
+	BytesScanned                int64
+	CacheHits, CacheMisses      int64
+	Deadlocks, TempBytes        int64
+}
+
+// Sample is the instant of collection: what is true now. A field the kind
+// or the role cannot see is nil.
+type Sample struct {
+	SessionsActive            *int
+	SessionsIdleInTransaction *int
+	SessionsWaiting           *int
+	QueriesQueued             *int
+	LongestQuerySeconds       *float64
+}
+
+// TableCounters is a table's cumulative counters, read beside its row; -1
+// when the kind does not have one.
+type TableCounters struct {
+	DeadRows, SeqScans, IdxScans int64
+}
+
 // ErrPartial wraps a Table error when the row returned beside it carries
 // the facts that were read before the failure: a table whose size and
 // estimate came back, but whose freshness column does not exist, is
@@ -30,9 +59,14 @@ type Source interface {
 	// MaxTables dropped.
 	Discover(ctx context.Context, d config.Discover) ([]config.StaticTable, int, error)
 	// Table reads one table: size and estimate always, max(freshness
-	// column) when fresh, count(*) when exact. An error wrapping
-	// ErrPartial comes with a row worth sending.
-	Table(ctx context.Context, t config.StaticTable, fresh, exact bool) (wire.DatabaseTable, error)
+	// column) when fresh, count(*) when exact, and its counters. An error
+	// wrapping ErrPartial comes with a row worth sending.
+	Table(ctx context.Context, t config.StaticTable, fresh, exact bool) (wire.DatabaseTable, TableCounters, error)
+	// Load is the instant's sample and the counters' reading, each query
+	// its own failure in the errors. Per-query facts are not read: a
+	// statement store's text can carry a literal, and dbhealth does not
+	// promise to strip one.
+	Load(ctx context.Context) (Sample, Counters, []wire.DatabaseError)
 	// Replication is nil, nil on a primary with no replicas.
 	Replication(ctx context.Context) (*wire.DatabaseReplication, error)
 	// Queries is the running count of round trips.

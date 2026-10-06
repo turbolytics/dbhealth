@@ -28,9 +28,10 @@ var _ collector.Source = (*Client)(nil)
 //	audit.log(ts)                  a second schema
 //	role reader                    CONNECT and SELECT, no pg_read_all_stats
 var (
-	adminDSN  string
-	readerDSN string
-	newestAt  time.Time
+	adminDSN   string
+	readerDSN  string
+	scratchDSN string
+	newestAt   time.Time
 )
 
 func TestMain(m *testing.M) {
@@ -52,6 +53,9 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	readerDSN = strings.Replace(adminDSN, "admin:admin@", "reader:reader@", 1)
+	// pg_stat_reset() is per database and blanks every table's estimate
+	// with it; the test that calls it gets a database of its own.
+	scratchDSN = strings.Replace(adminDSN, "/app?", "/scratch?", 1)
 	if err := seed(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "seed:", err)
 		os.Exit(1)
@@ -79,6 +83,7 @@ func seed(ctx context.Context) error {
 		// vacuum then counts the heap itself, so the two must not add up.
 		`SELECT pg_stat_force_next_flush()`,
 		`VACUUM ANALYZE`,
+		`CREATE DATABASE scratch`,
 		`CREATE ROLE reader LOGIN PASSWORD 'reader'`,
 		`GRANT CONNECT ON DATABASE app TO reader`,
 		`GRANT USAGE ON SCHEMA public, audit TO reader`,
@@ -262,7 +267,7 @@ func TestTable_EstimateThenExact(t *testing.T) {
 	c := open(t, adminDSN)
 	events := config.StaticTable{Name: "public.events", FreshnessColumn: "created_at"}
 
-	est, err := c.Table(context.Background(), events, true, false)
+	est, _, err := c.Table(context.Background(), events, true, false)
 	assert.NoError(t, err)
 	assert.Equal(t, "public.events", est.Name)
 	assert.NotNil(t, est.Rows)
@@ -273,7 +278,7 @@ func TestTable_EstimateThenExact(t *testing.T) {
 	assert.True(t, est.NewestAt.Equal(newestAt))
 	assert.False(t, est.CheckedAt.IsZero())
 
-	exact, err := c.Table(context.Background(), events, false, true)
+	exact, _, err := c.Table(context.Background(), events, false, true)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(1000), *exact.Rows)
 	assert.True(t, exact.RowsExact)
@@ -282,7 +287,7 @@ func TestTable_EstimateThenExact(t *testing.T) {
 
 func TestTable_WithoutASchemaIsPublic(t *testing.T) {
 	c := open(t, adminDSN)
-	got, err := c.Table(context.Background(), config.StaticTable{Name: "blobs"}, true, true)
+	got, _, err := c.Table(context.Background(), config.StaticTable{Name: "blobs"}, true, true)
 	assert.NoError(t, err)
 	assert.Equal(t, "public.blobs", got.Name)
 	assert.Equal(t, int64(2), *got.Rows)
@@ -295,7 +300,7 @@ func TestTable_DroppedTableIsAnError(t *testing.T) {
 	assert.NoError(t, err)
 	_, err = c.pool.Exec(context.Background(), `DROP TABLE public.gone`)
 	assert.NoError(t, err)
-	_, err = c.Table(context.Background(), config.StaticTable{Name: "public.gone"}, true, true)
+	_, _, err = c.Table(context.Background(), config.StaticTable{Name: "public.gone"}, true, true)
 	assert.Error(t, err)
 	assert.That(t, strings.Contains(err.Error(), "public.gone"))
 }
@@ -336,7 +341,7 @@ func TestVersion_ErrorNamesNoHostOrUser(t *testing.T) {
 
 func TestTable_ABrokenFreshnessColumnStillReportsTheTable(t *testing.T) {
 	c := open(t, adminDSN)
-	row, err := c.Table(context.Background(), config.StaticTable{Name: "public.events", FreshnessColumn: "nope"}, true, false)
+	row, _, err := c.Table(context.Background(), config.StaticTable{Name: "public.events", FreshnessColumn: "nope"}, true, false)
 	assert.True(t, errors.Is(err, ErrPartial))
 	assert.That(t, strings.Contains(err.Error(), "nope"))
 	assert.Equal(t, "public.events", row.Name)

@@ -137,7 +137,7 @@ func (c *Collector) collectFacts(ctx context.Context, now time.Time, d *wire.Dat
 		}
 		fresh := t.FreshnessColumn != "" && c.due(st.freshAt, now, c.tables.FreshnessIntervalSeconds)
 		exactNow := exact && c.due(st.exactAt, now, c.tables.RowsExactIntervalSeconds)
-		row, err := c.src.Table(ctx, t, fresh, exactNow)
+		row, _, err := c.src.Table(ctx, t, fresh, exactNow)
 		if err != nil {
 			fail(t.Name, err)
 			if !errors.Is(err, source.ErrPartial) {
