@@ -37,6 +37,25 @@ IMAGE ?= dbhealth:dev
 image:
 	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t $(IMAGE) .
 
+# One architecture, built on a runner of that architecture, pushed by digest
+# so it is pullable only by someone who knows the digest. The release
+# workflow assembles the tag from both digests after each has been run.
+RELEASE_IMAGE ?= turbolytics/dbhealth
+release-image-digest:
+	@test -n "$(RELEASE_PLATFORM)" || { \
+		echo "release-image-digest: set RELEASE_PLATFORM, e.g. linux/amd64" >&2; exit 1; }
+	@mkdir -p $(dir $(RELEASE_METADATA_FILE))
+	docker buildx build \
+		--platform $(RELEASE_PLATFORM) \
+		-f Dockerfile \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--label org.opencontainers.image.version=$(VERSION) \
+		--label org.opencontainers.image.revision=$(COMMIT) \
+		--label org.opencontainers.image.source=https://github.com/turbolytics/dbhealth \
+		--metadata-file $(RELEASE_METADATA_FILE) \
+		--output type=image,name=$(RELEASE_IMAGE),push-by-digest=true,name-canonical=true,push=true .
+
 # The image, run against a real Postgres: validate, then a few intervals
 # of run with StatsD, and the gauges have to say the probe answered and
 # the tables were read.

@@ -1,0 +1,316 @@
+name: release
+
+# Publishes the multi-arch image, one architecture per runner of that
+# architecture, and proves the artifact before it has a name anyone can pull.
+# The same shape as sql-flow's release, for the same reasons: nothing here
+# cross-compiles, and the foreign half is run on its own hardware before it
+# is named.
+#
+# The order is the point. Each half is pushed by digest, which is pullable
+# only by someone who knows the digest, then run, then put through the release
+# suite. The release tag is created after all of that. A failure leaves
+# unreferenced blobs in the registry rather than a tag resolving to a broken
+# binary, because a tag is the thing that cannot be taken back. The GitHub
+# release, with the binaries attached, is created last, from the tag's
+# message.
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  IMAGE: turbolytics/dbhealth
+
+jobs:
+  # A tag is pushed by a person, so the guard is here rather than assumed:
+  # a tag off a feature branch would ship unmerged commits.
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: The tag is on main
+        run: |
+          git fetch -q origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::${GITHUB_REF_NAME} is not on origin/main, so it would ship unmerged commits"
+            exit 1
+          }
+
+  build:
+    needs: preflight
+    strategy:
+      # Both halves are attempted. Learning that one architecture failed while
+      # the other is unknown is the position this workflow exists to end.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # VERSION comes from `git describe`, which needs tags and history.
+          fetch-depth: 0
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build ${{ matrix.platform }} and push by digest
+        id: build
+        run: |
+          make release-image-digest \
+            RELEASE_PLATFORM=${{ matrix.platform }} \
+            VERSION=${GITHUB_REF_NAME} \
+            RELEASE_METADATA_FILE="${RUNNER_TEMP}/metadata.json"
+          digest=$(python3 -c "import json;print(json.load(open('${RUNNER_TEMP}/metadata.json'))['containerimage.digest'])")
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "${{ matrix.platform }} -> ${digest}"
+
+      # Before it has a name. The runner is this image's own architecture, so
+      # the binary runs on real hardware and no emulator is in the answer.
+      - name: The binary runs on ${{ matrix.platform }}
+        env:
+          REF: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+        run: |
+          docker pull -q "$REF"
+          out=$(docker run --rm "$REF" version) || {
+            echo "::error::${{ matrix.platform }} binary does not run"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -qx "dbhealth ${GITHUB_REF_NAME}" || {
+            echo "::error::expected 'dbhealth ${GITHUB_REF_NAME}'"; exit 1; }
+
+      # The sha256: prefix is stripped because upload-artifact rejects a colon
+      # in a path. The assemble job puts it back.
+      - name: Hand the digest to the assemble
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # The release test, against the artifact that will ship rather than one CI
+  # built for itself: the image's validate and a few intervals of run against
+  # a real Postgres, the gauges checked. amd64 only: both halves are built
+  # natively, and this is the architecture almost every deployment runs.
+  release-tests:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: digest-amd64
+          path: ${{ runner.temp }}/digests
+
+      - name: scripts/release-test.sh against the published amd64 image
+        run: |
+          digest=$(ls -1 "${RUNNER_TEMP}/digests" | head -1)
+          ref="${IMAGE}@sha256:${digest}"
+          echo "testing ${ref}"
+          docker pull -q "$ref"
+          ./scripts/release-test.sh "$ref"
+
+  # The first moment this release has a name. Everything that can fail has
+  # failed by now.
+  assemble:
+    needs: [build, release-tests]
+    runs-on: ubuntu-latest
+    steps:
+      # Not merge-multiple: each artifact keeps its own directory, so the
+      # architecture is carried by the name rather than inferred from a
+      # manifest dump whose format this would then depend on.
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # One digest per architecture, each named by the job that produced it. A
+      # matrix leg that never ran leaves its directory missing, and without
+      # this the release would be tagged single-arch -- the v1.0.0 failure,
+      # which looks correct from the machine that made it.
+      - name: Both architectures produced a digest
+        id: refs
+        run: |
+          refs=""
+          for arch in amd64 arm64; do
+            dir="${RUNNER_TEMP}/digests/digest-${arch}"
+            [ -d "$dir" ] || { echo "::error::no digest for ${arch}: its build did not finish"; exit 1; }
+            n=$(ls -1 "$dir" | wc -l)
+            [ "$n" = 1 ] || { echo "::error::expected 1 digest for ${arch}, found ${n}"; exit 1; }
+            refs="${refs} ${IMAGE}@sha256:$(ls -1 "$dir")"
+          done
+          echo "refs=${refs}" >> "$GITHUB_OUTPUT"
+          echo "assembling from:${refs}"
+
+      - name: Tag the release
+        run: |
+          docker buildx imagetools create -t "${IMAGE}:${GITHUB_REF_NAME}" \
+            ${{ steps.refs.outputs.refs }}
+
+  # Reads the registry back, which is the v1.0.0 lesson: a single-arch publish
+  # and a stale tag both look correct from the machine that made them.
+  verify:
+    needs: assemble
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # This job only reads a public image, so it needs no credential to be
+      # correct -- but an anonymous read is rate limited per source address,
+      # and these runners are a large shared pool. A release must not turn on
+      # how busy the pool is.
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # REQUIRED_PLATFORMS narrows the script to this runner's own
+      # architecture, so the binary runs natively. Each job still asserts the
+      # manifest carries its platform.
+      - name: Verify ${{ matrix.platform }}
+        env:
+          REQUIRED_PLATFORMS: ${{ matrix.platform }}
+        run: ./scripts/verify-release-image.sh "${IMAGE}:${GITHUB_REF_NAME}"
+
+  # `latest` is what a reader gets who types no tag, so it moves last, only
+  # once both architectures have been read back, and only forwards. Publishing
+  # an older tag -- a backport, or a re-publish of something already
+  # superseded -- must not hand `latest` to it; the workflow works it out and
+  # says which tag stopped it.
+  latest:
+    needs: verify
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Prints what it read and what it decided: a step that decides
+      # something must say what it decided, or its failure is a guess.
+      #
+      # The checkout above brings the tags; the fetch only refreshes them and
+      # cannot fail the step. `git tag --sort=-v:refname` is git's own version
+      # sort, so no pipeline of grep and sort decides a release.
+      - name: This tag is the newest release
+        id: newest
+        run: |
+          git fetch --tags --force origin ||
+            echo "::warning::could not refresh tags; using the ones the checkout brought"
+          tags="$(git tag -l 'v*' --sort=-v:refname)"
+          echo "release tags, newest first:"
+          printf '%s\n' "$tags" | head -5 | sed 's/^/  /'
+          newest="$(printf '%s\n' "$tags" | awk '!/-/ { print; exit }')"
+          echo "newest: ${newest:-<none>}   this tag: ${GITHUB_REF_NAME}"
+          if [ "$newest" = "$GITHUB_REF_NAME" ]; then
+            echo "move=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "move=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${newest:-a newer tag} is newer than ${GITHUB_REF_NAME}; leaving latest where it is"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.newest.outputs.move == 'true'
+
+      - uses: docker/login-action@v3
+        if: steps.newest.outputs.move == 'true'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Point latest at ${{ github.ref_name }}
+        if: steps.newest.outputs.move == 'true'
+        run: docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}:${GITHUB_REF_NAME}"
+
+      # Only this runner's own platform: whether latest points at this release
+      # is a manifest-list digest comparison, the same answer from either
+      # architecture, and the verify job already ran both halves natively.
+      # Asking for arm64 here would run it under emulation.
+      - name: Verify latest resolves to this release
+        if: steps.newest.outputs.move == 'true'
+        env:
+          REQUIRED_PLATFORMS: linux/amd64
+        run: ./scripts/verify-release-image.sh "${IMAGE}:${GITHUB_REF_NAME}" "${IMAGE}:latest"
+
+  # The GitHub release: the tag's own message as the notes, and the binaries
+  # for both architectures attached, pulled out of the images that were just
+  # verified so the file a reader downloads is byte for byte what the image
+  # runs. Created last: a release is a page people link to, and it must not
+  # exist for a tag that did not ship.
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: The binaries, out of the published image
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            id=$(docker create --platform "linux/${arch}" "${IMAGE}:${GITHUB_REF_NAME}")
+            docker cp "${id}:/usr/local/bin/dbhealth" "dist/dbhealth-${GITHUB_REF_NAME}-linux-${arch}"
+            docker rm "$id" >/dev/null
+          done
+          (cd dist && sha256sum dbhealth-* > SHA256SUMS)
+          ls -l dist
+
+      - name: The notes are the tag's message
+        run: |
+          git fetch --tags --force origin
+          git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > notes.md
+          test -s notes.md || echo "${GITHUB_REF_NAME}" > notes.md
+          printf '\n---\n\n    docker pull %s:%s\n' "${IMAGE}" "${GITHUB_REF_NAME}" >> notes.md
+          cat notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            --verify-tag \
+            $([[ "${GITHUB_REF_NAME}" == *-* ]] && echo --prerelease) \
+            dist/*
