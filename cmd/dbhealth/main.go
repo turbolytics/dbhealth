@@ -3,6 +3,7 @@
 //
 //	dbhealth validate -c dbhealth.yml
 //	dbhealth run -c dbhealth.yml
+//	dbhealth version
 package main
 
 import (
@@ -29,6 +30,7 @@ const usage = `usage:
   dbhealth validate -c <file>   check the file and say how many databases it names
   dbhealth run      -c <file>   watch them and report
   dbhealth run                  watch DBHEALTH_DSN and report with DBHEALTH_KEY
+  dbhealth version              print the version and exit
 `
 
 // finalTimeout bounds the last bundle on shutdown.
@@ -42,6 +44,10 @@ func run(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
 		return 2
+	}
+	if args[0] == "version" {
+		fmt.Println("dbhealth " + report.Version)
+		return 0
 	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	path := fs.String("c", "", "the config file")
