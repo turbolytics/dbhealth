@@ -439,3 +439,22 @@ func TestConfig_FromEnvLoad(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, f.Load.Enabled)
 }
+
+// The README's second quick start: no Control yet, metrics for your own
+// Prometheus. Without a key there is nothing to send to Control, so the
+// environment path reports nowhere but the metrics endpoint.
+func TestFromEnv_MetricsWithoutAKey(t *testing.T) {
+	t.Setenv("DBHEALTH_DSN", "postgres://u:secret@pg.internal:5432/billing")
+	t.Setenv("DBHEALTH_KEY", "")
+	t.Setenv("DBHEALTH_METRICS", "prometheus")
+	f, err := FromEnv()
+	assert.NoError(t, err)
+	assert.Equal(t, "", f.Report.To)
+	assert.Equal(t, "prometheus", f.Report.Metrics)
+
+	// Naming Control's ingest without a key is still a mistake to refuse.
+	t.Setenv("DBHEALTH_REPORT_TO", DefaultReportTo)
+	_, err = FromEnv()
+	assert.Error(t, err)
+	contains(t, err.Error(), "report.credential")
+}

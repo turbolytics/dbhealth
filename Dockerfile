@@ -17,4 +17,6 @@ RUN CGO_ENABLED=0 go build -trimpath \
 FROM ${RUNTIME_IMAGE}
 COPY --from=builder /dbhealth /usr/local/bin/dbhealth
 ENTRYPOINT ["/usr/local/bin/dbhealth"]
-CMD ["run", "-c", "/etc/dbhealth/dbhealth.yml"]
+# No arguments is the README's quick start: one database from DBHEALTH_DSN.
+# A file is `run -c <path>`, with the file mounted at that path.
+CMD ["run"]
