@@ -416,3 +416,26 @@ func TestConfig_FromEnvReadsMetrics(t *testing.T) {
 	assert.Equal(t, "http://datadog-agent:4318", f.Report.OTLP)
 	assert.Equal(t, "127.0.0.1:9100", f.Report.Listen)
 }
+
+func TestConfig_LoadDefaultsOnAndRules(t *testing.T) {
+	f, err := Load(write(t, minimal))
+	assert.NoError(t, err)
+	assert.True(t, f.Load.Enabled)
+	f, err = Load(write(t, minimal+"load:\n  enabled: false\n"))
+	assert.NoError(t, err)
+	assert.False(t, f.Load.Enabled)
+	// Per-query facts are out by ruling; the key is unknown, not ignored.
+	contains(t, loadErr(t, minimal+"load:\n  queries:\n    top: 5\n"), "queries")
+}
+
+func TestConfig_FromEnvLoad(t *testing.T) {
+	t.Setenv("DBHEALTH_DSN", "postgres://u:p@h:5432/d")
+	t.Setenv("DBHEALTH_KEY", "sfc_x")
+	f, err := FromEnv()
+	assert.NoError(t, err)
+	assert.True(t, f.Load.Enabled)
+	t.Setenv("DBHEALTH_LOAD", "false")
+	f, err = FromEnv()
+	assert.NoError(t, err)
+	assert.False(t, f.Load.Enabled)
+}
