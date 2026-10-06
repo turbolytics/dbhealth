@@ -6,6 +6,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -39,7 +40,9 @@ type Database struct {
 	// Name is the instance name control shows. Defaults to the redacted
 	// target, host:port/database.
 	Name string
-	// Cluster groups a primary with its replicas.
+	// Cluster groups a primary with its replicas. Defaults to Name: a
+	// database with no replicas is its own cluster, and control groups
+	// endpoints by it.
 	Cluster string
 }
 
@@ -260,6 +263,64 @@ func (in *file) resolve() (*File, error) {
 				db.Name = target
 			}
 		}
+		if db.Cluster == "" {
+			db.Cluster = db.Name
+		}
+	}
+	return f, nil
+}
+
+// DefaultReportTo is control's ingest, where FromEnv reports unless
+// DBHEALTH_REPORT_TO says otherwise.
+const DefaultReportTo = "https://ingest.turbolytics.io"
+
+// FromEnv is the configuration with no file: one Postgres database from
+// DBHEALTH_DSN, discovery on, every default, reported with DBHEALTH_KEY.
+// It is what `docker run` with two variables needs.
+//
+//	DBHEALTH_DSN        the connection string; required
+//	DBHEALTH_KEY        the credential
+//	DBHEALTH_NAME       the instance name; defaults to the database's name
+//	DBHEALTH_CLUSTER    the cluster; defaults to the name
+//	DBHEALTH_REPORT_TO  control's ingest; defaults to DefaultReportTo
+func FromEnv() (*File, error) {
+	dsn := os.Getenv("DBHEALTH_DSN")
+	if dsn == "" {
+		return nil, errors.New("DBHEALTH_DSN is not set: give a file with -c, or the connection string in DBHEALTH_DSN")
+	}
+	target, err := RedactedTarget(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("DBHEALTH_DSN: %w", err)
+	}
+	name := os.Getenv("DBHEALTH_NAME")
+	if name == "" {
+		// The target is host:port/database; the database is the name an
+		// operator knows it by.
+		name = target
+		if i := strings.LastIndex(target, "/"); i >= 0 && i < len(target)-1 {
+			name = target[i+1:]
+		}
+	}
+	in := file{
+		Databases: []Database{
+			{
+				Kind:    "postgres",
+				DSN:     dsn,
+				Name:    name,
+				Cluster: os.Getenv("DBHEALTH_CLUSTER"),
+			},
+		},
+		Report: Report{
+			To:         cmp.Or(os.Getenv("DBHEALTH_REPORT_TO"), DefaultReportTo),
+			Credential: os.Getenv("DBHEALTH_KEY"),
+		},
+	}
+	f, err := in.resolve()
+	if err != nil {
+		return nil, err
+	}
+	if err := f.validate(); err != nil {
+		return nil, err
 	}
 	return f, nil
 }

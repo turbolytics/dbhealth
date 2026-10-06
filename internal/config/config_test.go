@@ -333,3 +333,54 @@ func TestConfig_ValidateRefusesWhatPgxCannotOpen(t *testing.T) {
 		t.Fatalf("the error carries the password: %q", err)
 	}
 }
+
+// A database with no cluster is its own cluster: control groups endpoints
+// by it, and a report without one is refused.
+func TestConfig_ClusterDefaultsToName(t *testing.T) {
+	f, err := Load(write(t, minimal))
+	assert.NoError(t, err)
+	assert.Equal(t, "h:5432/d", f.Databases[0].Name)
+	assert.Equal(t, "h:5432/d", f.Databases[0].Cluster)
+}
+
+// With no file, the environment watches one database with discovery on and
+// reports to control's ingest.
+func TestFromEnv(t *testing.T) {
+	t.Setenv("DBHEALTH_DSN", "postgres://u:secret@pg.internal:5432/billing")
+	t.Setenv("DBHEALTH_KEY", "sfp_key")
+	f, err := FromEnv()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(f.Databases))
+	db := f.Databases[0]
+	assert.Equal(t, "postgres", db.Kind)
+	assert.Equal(t, "billing", db.Name)
+	assert.Equal(t, "billing", db.Cluster)
+	assert.NotNil(t, f.Tables.Discover)
+	assert.Equal(t, 60, f.Probe.IntervalSeconds)
+	assert.Equal(t, DefaultReportTo, f.Report.To)
+	assert.Equal(t, "sfp_key", f.Report.Credential)
+
+	t.Setenv("DBHEALTH_NAME", "billing-primary")
+	t.Setenv("DBHEALTH_CLUSTER", "billing")
+	t.Setenv("DBHEALTH_REPORT_TO", "http://localhost:8090")
+	f, err = FromEnv()
+	assert.NoError(t, err)
+	assert.Equal(t, "billing-primary", f.Databases[0].Name)
+	assert.Equal(t, "billing", f.Databases[0].Cluster)
+	assert.Equal(t, "http://localhost:8090", f.Report.To)
+}
+
+// Without a DSN there is nothing to watch, and the error names the
+// variable. A DSN that does not parse is refused without its password.
+func TestFromEnv_Refusals(t *testing.T) {
+	t.Setenv("DBHEALTH_DSN", "")
+	_, err := FromEnv()
+	assert.Error(t, err)
+	contains(t, err.Error(), "DBHEALTH_DSN")
+
+	t.Setenv("DBHEALTH_DSN", "postgres://u:secret@pg.internal:notaport/billing")
+	t.Setenv("DBHEALTH_KEY", "sfp_key")
+	_, err = FromEnv()
+	assert.Error(t, err)
+	assert.False(t, strings.Contains(err.Error(), "secret"))
+}

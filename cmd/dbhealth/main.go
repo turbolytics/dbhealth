@@ -28,6 +28,7 @@ import (
 const usage = `usage:
   dbhealth validate -c <file>   check the file and say how many databases it names
   dbhealth run      -c <file>   watch them and report
+  dbhealth run                  watch DBHEALTH_DSN and report with DBHEALTH_KEY
 `
 
 // finalTimeout bounds the last bundle on shutdown.
@@ -47,11 +48,12 @@ func run(args []string) int {
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if *path == "" {
-		fmt.Fprintln(os.Stderr, "dbhealth: -c <file> is required")
-		return 2
+	// No file is the environment: one database from DBHEALTH_DSN.
+	load := config.FromEnv
+	if *path != "" {
+		load = func() (*config.File, error) { return config.Load(*path) }
 	}
-	f, err := config.Load(*path)
+	f, err := load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dbhealth: %v\n", err)
 		return 1
@@ -93,7 +95,7 @@ func serve(f *config.File, path string) int {
 		}
 		defer client.Close()
 		c := collector.New(db, f.Tables, f.Probe, client, time.Now)
-		instances = append(instances, report.Instance{Name: db.Name, Collect: c.Collect})
+		instances = append(instances, report.Instance{Name: db.Name, Cluster: db.Cluster, Collect: c.Collect})
 		log.Info("watching", zap.String("instance", db.Name), zap.String("target", c.Target()))
 	}
 
