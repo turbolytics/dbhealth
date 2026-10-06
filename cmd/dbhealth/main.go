@@ -105,7 +105,7 @@ func serve(f *config.File, path string) int {
 			return 1
 		}
 		defer client.Close()
-		c := collector.New(db, f.Tables, f.Probe, client, time.Now)
+		c := collector.New(db, f.Tables, f.Probe, client, time.Now).WithLoad(f.Load)
 		instances = append(instances, report.Instance{Name: db.Name, Cluster: db.Cluster, Collect: c.Collect})
 		log.Info("watching", zap.String("instance", db.Name), zap.String("target", c.Target()))
 	}

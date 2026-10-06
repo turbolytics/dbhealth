@@ -30,9 +30,13 @@ type Collector struct {
 	db     config.Database
 	tables config.Tables
 	probe  config.Probe
+	load   config.LoadSection
 	src    Source
 	now    func() time.Time
 	target string
+
+	// counters is the last reading, for the next interval's rates.
+	counters source.Counters
 
 	version    string
 	discovered []config.StaticTable
@@ -50,6 +54,9 @@ type tableState struct {
 	freshAt   time.Time
 	exactRows *int64
 	exactAt   time.Time
+	// counters and countersAt are the last reading, for the scan rates.
+	counters   source.TableCounters
+	countersAt time.Time
 }
 
 // New prepares a collector for one database. The target the bundle
@@ -59,7 +66,14 @@ func New(db config.Database, tables config.Tables, probe config.Probe, src Sourc
 	if err != nil {
 		target = db.Name
 	}
-	return &Collector{db: db, tables: tables, probe: probe, src: src, now: now, target: target, last: map[string]*tableState{}}
+	return &Collector{db: db, tables: tables, probe: probe, load: config.LoadSection{Enabled: true},
+		src: src, now: now, target: target, last: map[string]*tableState{}}
+}
+
+// WithLoad sets the load configuration; on by default.
+func (c *Collector) WithLoad(l config.LoadSection) *Collector {
+	c.load = l
+	return c
 }
 
 // Target is host:port/database, what the bundle carries for this database.
@@ -122,6 +136,24 @@ func (c *Collector) collectFacts(ctx context.Context, now time.Time, d *wire.Dat
 	}
 	d.Replication = rep
 
+	if c.load.Enabled {
+		sample, counters, errs := c.src.Load(ctx)
+		d.Collection.Errors = append(d.Collection.Errors, errs...)
+		l := rates(c.counters, counters)
+		if l == nil {
+			l = &wire.DatabaseLoad{}
+		}
+		l.SessionsActiveNow, l.SessionsIdleInTransactionNow = sample.SessionsActive, sample.SessionsIdleInTransaction
+		l.SessionsWaitingNow, l.QueriesQueuedNow = sample.SessionsWaiting, sample.QueriesQueued
+		l.LongestQuerySeconds = sample.LongestQuerySeconds
+		if *l != (wire.DatabaseLoad{}) {
+			d.Load = l
+		}
+		// A reading with no clock is a failed read: nothing to subtract
+		// from next time either.
+		c.counters = counters
+	}
+
 	watched := c.watched(ctx, now, fail)
 	seen := make(map[string]bool, len(watched))
 	for _, t := range watched {
@@ -137,7 +169,7 @@ func (c *Collector) collectFacts(ctx context.Context, now time.Time, d *wire.Dat
 		}
 		fresh := t.FreshnessColumn != "" && c.due(st.freshAt, now, c.tables.FreshnessIntervalSeconds)
 		exactNow := exact && c.due(st.exactAt, now, c.tables.RowsExactIntervalSeconds)
-		row, _, err := c.src.Table(ctx, t, fresh, exactNow)
+		row, counters, err := c.src.Table(ctx, t, fresh, exactNow)
 		if err != nil {
 			fail(t.Name, err)
 			if !errors.Is(err, source.ErrPartial) {
@@ -145,6 +177,10 @@ func (c *Collector) collectFacts(ctx context.Context, now time.Time, d *wire.Dat
 			}
 		}
 		row.CheckedAt = now
+		if !st.countersAt.IsZero() {
+			row.SeqScansPerSecond, row.IndexScansPerSecond = tableRates(st.counters, counters, now.Sub(st.countersAt))
+		}
+		st.counters, st.countersAt = counters, now
 		// A check that was attempted is a check that was due, whatever it
 		// returned: a broken column is retried on its interval, not every
 		// probe.

@@ -29,6 +29,7 @@ type File struct {
 	Databases []Database
 	Probe     Probe
 	Tables    Tables
+	Load      LoadSection
 	Report    Report
 }
 
@@ -82,6 +83,12 @@ type StaticTable struct {
 	Rows string
 }
 
+// LoadSection is the load sub-section: what people are doing to the
+// database. On by default; one or two catalog reads an interval.
+type LoadSection struct {
+	Enabled bool
+}
+
 // Report is where the facts go: control, StatsD, an OpenTelemetry
 // exporter, any of them.
 type Report struct {
@@ -120,6 +127,9 @@ type file struct {
 		FreshnessIntervalSeconds *int   `yaml:"freshness_interval_seconds"`
 		RowsExactIntervalSeconds *int   `yaml:"rows_exact_interval_seconds"`
 	} `yaml:"tables"`
+	Load struct {
+		Enabled *bool `yaml:"enabled"`
+	} `yaml:"load"`
 	Report struct {
 		To         string `yaml:"to"`
 		Credential string `yaml:"credential"`
@@ -237,7 +247,10 @@ func expandEnv(v reflect.Value) error {
 // resolve turns the file as written into a File with the defaults applied.
 // A written interval must be positive; an absent one takes the default.
 func (in *file) resolve() (*File, error) {
-	f := &File{Databases: in.Databases, Report: Report(in.Report)}
+	f := &File{Databases: in.Databases, Report: Report(in.Report), Load: LoadSection{Enabled: true}}
+	if in.Load.Enabled != nil {
+		f.Load.Enabled = *in.Load.Enabled
+	}
 	if f.Report.Listen == "" {
 		f.Report.Listen = DefaultListen
 	}
@@ -308,6 +321,7 @@ const DefaultReportTo = "https://ingest.turbolytics.io"
 //	DBHEALTH_METRICS    prometheus or otlp
 //	DBHEALTH_OTLP       the OTLP collector, as http://collector:4318
 //	DBHEALTH_LISTEN     where /metrics and /healthz answer; defaults to :8000
+//	DBHEALTH_LOAD       false to leave the load sub-section out
 func FromEnv() (*File, error) {
 	dsn := os.Getenv("DBHEALTH_DSN")
 	if dsn == "" {
@@ -342,6 +356,10 @@ func FromEnv() (*File, error) {
 	in.Report.Metrics = os.Getenv("DBHEALTH_METRICS")
 	in.Report.OTLP = os.Getenv("DBHEALTH_OTLP")
 	in.Report.Listen = os.Getenv("DBHEALTH_LISTEN")
+	if v, ok := os.LookupEnv("DBHEALTH_LOAD"); ok {
+		on := v != "false" && v != "0" && v != "off"
+		in.Load.Enabled = &on
+	}
 	f, err := in.resolve()
 	if err != nil {
 		return nil, err

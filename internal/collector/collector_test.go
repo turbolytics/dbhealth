@@ -19,21 +19,30 @@ import (
 
 // fake is a source that answers from fields and counts what was asked.
 type fake struct {
-	probeOK    bool
-	tables     []config.StaticTable
-	tableErr   map[string]error
-	partial    map[string]error // Table returns the row and this, wrapped in postgres.ErrPartial
-	dropped    int
-	queries    int
-	discovers  int
-	exacts     map[string]int
-	freshes    map[string]int
-	now        func() time.Time
-	replicated *wire.DatabaseReplication
+	probeOK  bool
+	tables   []config.StaticTable
+	tableErr map[string]error
+	partial  map[string]error // Table returns the row and this, wrapped in postgres.ErrPartial
+	dropped  int
+	// load: the fake's counters advance 60 commits, 1000 rows read, 50
+	// written, 900 hits and 100 misses per call; tables 6 seq and 600 idx
+	// scans.
+	loadCounters  bool
+	noCounters    bool
+	loadErr       []wire.DatabaseError
+	loads         int
+	tableCounters bool
+	calls         map[string]int64
+	queries       int
+	discovers     int
+	exacts        map[string]int
+	freshes       map[string]int
+	now           func() time.Time
+	replicated    *wire.DatabaseReplication
 }
 
 func newFake(now func() time.Time) *fake {
-	return &fake{probeOK: true, tableErr: map[string]error{}, partial: map[string]error{}, exacts: map[string]int{}, freshes: map[string]int{}, now: now}
+	return &fake{probeOK: true, tableErr: map[string]error{}, partial: map[string]error{}, exacts: map[string]int{}, freshes: map[string]int{}, now: now, calls: map[string]int64{}}
 }
 
 func (f *fake) Probe(ctx context.Context, timeout time.Duration) wire.DatabaseProbe {
@@ -64,8 +73,25 @@ func (f *fake) Discover(ctx context.Context, d config.Discover) ([]config.Static
 
 func (f *fake) Load(ctx context.Context) (source.Sample, source.Counters, []wire.DatabaseError) {
 	f.queries += 2
-	return source.Sample{}, source.Counters{Queries: -1, BytesScanned: -1}, nil
+	f.loads++
+	f.calls["load"]++
+	n := f.calls["load"]
+	active, idle, waiting := 3, 1, 0
+	longest := 0.5
+	s := source.Sample{SessionsActive: &active, SessionsIdleInTransaction: &idle, SessionsWaiting: &waiting, LongestQuerySeconds: &longest}
+	if f.noCounters {
+		return s, source.Counters{}, f.loadErr
+	}
+	return s, source.Counters{
+		At: f.now(), Queries: -1, BytesScanned: -1,
+		Commits: 60 * n, Rollbacks: n, RowsRead: 1000 * n, RowsWritten: 50 * n,
+		CacheHits: 900 * n, CacheMisses: 100 * n, Deadlocks: 0, TempBytes: 0,
+	}, f.loadErr
 }
+
+// resetCounters makes the next reading start from zero, as pg_stat_reset
+// or a restart does: the reading after it is below the one before.
+func (f *fake) resetCounters() { f.calls["load"] = -1 }
 
 func (f *fake) Table(ctx context.Context, t config.StaticTable, fresh, exact bool) (wire.DatabaseTable, source.TableCounters, error) {
 	f.queries++
@@ -91,7 +117,15 @@ func (f *fake) Table(ctx context.Context, t config.StaticTable, fresh, exact boo
 		at := f.now()
 		out.NewestAt = &at
 	}
-	return out, source.TableCounters{DeadRows: -1, SeqScans: -1, IdxScans: -1}, nil
+	counters := source.TableCounters{DeadRows: -1, SeqScans: -1, IdxScans: -1}
+	if f.tableCounters {
+		f.calls["table:"+t.Name]++
+		n := f.calls["table:"+t.Name]
+		counters = source.TableCounters{DeadRows: 5, SeqScans: 6 * n, IdxScans: 600 * n}
+		d := counters.DeadRows
+		out.DeadRows = &d
+	}
+	return out, counters, nil
 }
 
 func (f *fake) Replication(ctx context.Context) (*wire.DatabaseReplication, error) {
@@ -274,9 +308,9 @@ func TestCollect_CostIsReported(t *testing.T) {
 	f := newFake(ck.now)
 	c := New(database(), static("exact", "public.a", "public.b"), probe(), f, ck.now)
 	d := c.Collect(context.Background())
-	// probe, version, 4 resources, replication, 2 × (table + fresh + exact)
+	// probe, version, 4 resources, replication, 2 for load, 2 × (table + fresh + exact)
 	assert.Equal(t, f.queries, d.Collection.Queries)
-	assert.Equal(t, 13, d.Collection.Queries)
+	assert.Equal(t, 15, d.Collection.Queries)
 	assert.That(t, d.Collection.DurationMs >= 0)
 
 	ck.advance(time.Minute)
@@ -291,12 +325,12 @@ func TestCollect_VersionIsReadOnce(t *testing.T) {
 	c := New(database(), static("estimate"), probe(), f, ck.now)
 	d := c.Collect(context.Background())
 	assert.Equal(t, "18.1", d.ServerVersion)
-	// probe, version, 4 resources, replication
-	assert.Equal(t, 7, d.Collection.Queries)
+	// probe, version, 4 resources, replication, 2 for load
+	assert.Equal(t, 9, d.Collection.Queries)
 	ck.advance(time.Minute)
 	d = c.Collect(context.Background())
 	assert.Equal(t, "18.1", d.ServerVersion)
-	assert.Equal(t, 6, d.Collection.Queries)
+	assert.Equal(t, 8, d.Collection.Queries)
 }
 
 func TestCollect_TargetIsRedacted(t *testing.T) {
@@ -391,4 +425,121 @@ func TestCollect_ForgetsATableDiscoveryStopsReturning(t *testing.T) {
 	ck.advance(10 * time.Minute)
 	c.Collect(context.Background())
 	assert.Equal(t, 1, len(c.last))
+}
+
+// Load: the sample every interval, the rates from the second interval on.
+
+func loaded(f *fake) {
+	f.loadCounters = true
+}
+
+func TestCollect_LoadIsSampleFirstThenRates(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	loaded(f)
+	c := New(database(), static("estimate", "public.t"), probe(), f, ck.now)
+	d := c.Collect(context.Background())
+	assert.NotNil(t, d.Load)
+	assert.Equal(t, 3, *d.Load.SessionsActiveNow)
+	assert.Nil(t, d.Load.TransactionsPerSecond)
+	assert.Nil(t, d.Load.CacheHitRatio)
+
+	ck.advance(time.Minute)
+	d = c.Collect(context.Background())
+	assert.NotNil(t, d.Load.TransactionsPerSecond)
+	assert.Equal(t, 1.0, *d.Load.TransactionsPerSecond) // the fake commits 60 a minute
+	assert.Equal(t, 0.9, *d.Load.CacheHitRatio)
+	assert.Nil(t, d.Load.QueriesPerSecond) // the fake has no statement counter
+}
+
+func TestCollect_ARestartForgetsTheCounters(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	loaded(f)
+	c := New(database(), static("estimate"), probe(), f, ck.now)
+	c.Collect(context.Background())
+	ck.advance(time.Minute)
+	assert.NotNil(t, c.Collect(context.Background()).Load.TransactionsPerSecond)
+	// A new process over the same database: nothing to subtract from.
+	fresh := New(database(), static("estimate"), probe(), f, ck.now)
+	ck.advance(time.Minute)
+	d := fresh.Collect(context.Background())
+	assert.NotNil(t, d.Load)
+	assert.Nil(t, d.Load.TransactionsPerSecond)
+}
+
+func TestCollect_ACounterResetSendsNoRateThatInterval(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	loaded(f)
+	c := New(database(), static("estimate"), probe(), f, ck.now)
+	c.Collect(context.Background())
+	ck.advance(time.Minute)
+	f.resetCounters()
+	d := c.Collect(context.Background())
+	assert.NotNil(t, d.Load)
+	assert.Nil(t, d.Load.TransactionsPerSecond)
+	ck.advance(time.Minute)
+	assert.NotNil(t, c.Collect(context.Background()).Load.TransactionsPerSecond)
+}
+
+func TestCollect_LoadErrorsAreEntriesAndTheSampleStillSends(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	loaded(f)
+	f.loadErr = []wire.DatabaseError{{Error: "pg_stat_database: permission denied"}}
+	f.noCounters = true
+	c := New(database(), static("estimate"), probe(), f, ck.now)
+	d := c.Collect(context.Background())
+	assert.NotNil(t, d.Load)
+	assert.NotNil(t, d.Load.SessionsActiveNow)
+	assert.Equal(t, 1, len(d.Collection.Errors))
+	assert.That(t, strings.Contains(d.Collection.Errors[0].Error, "pg_stat_database"))
+}
+
+func TestCollect_LoadDisabledSendsNone(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	loaded(f)
+	tables := static("estimate", "public.t")
+	c := New(database(), tables, probe(), f, ck.now)
+	c.load = config.LoadSection{Enabled: false}
+	d := c.Collect(context.Background())
+	assert.Nil(t, d.Load)
+	assert.Equal(t, 0, f.loads)
+	// probe, version, 4 resources, replication, 2 for the table (fresh)
+	assert.Equal(t, 9, d.Collection.Queries)
+}
+
+func TestCollect_TableRatesFromTableCounters(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	f.tableCounters = true
+	c := New(database(), static("estimate", "public.t"), probe(), f, ck.now)
+	d := c.Collect(context.Background())
+	assert.Equal(t, int64(5), *d.Tables[0].DeadRows)
+	assert.Nil(t, d.Tables[0].SeqScansPerSecond)
+	ck.advance(time.Minute)
+	d = c.Collect(context.Background())
+	assert.NotNil(t, d.Tables[0].SeqScansPerSecond)
+	assert.Equal(t, 0.1, *d.Tables[0].SeqScansPerSecond) // the fake adds 6 seq scans a call
+	assert.Equal(t, 10.0, *d.Tables[0].IndexScansPerSecond)
+}
+
+func TestCollect_WidestLoadFitsTheBundle(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	loaded(f)
+	f.tableCounters = true
+	var names []string
+	for i := 0; i < wire.MaxDatabaseTables; i++ {
+		names = append(names, fmt.Sprintf("%s.%s_%02d", strings.Repeat("s", 63), strings.Repeat("t", 60), i))
+	}
+	c := New(database(), static("exact", names...), probe(), f, ck.now)
+	c.Collect(context.Background())
+	ck.advance(time.Minute)
+	d := c.Collect(context.Background())
+	raw, err := json.Marshal(wire.Bundle{Database: &d})
+	assert.NoError(t, err)
+	assert.That(t, len(raw) < 64<<10)
 }
