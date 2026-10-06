@@ -25,10 +25,14 @@ trap cleanup EXIT
 
 docker network create "$NET" >/dev/null
 docker run -d --name "$PG" --network "$NET" -e POSTGRES_USER=rt -e POSTGRES_PASSWORD="$PASS" -e POSTGRES_DB=rt postgres:18 >/dev/null
+# Not pg_isready: the image's init starts a temporary server first, which
+# answers pg_isready before the rt database exists. A query against rt is
+# the only honest readiness.
 for i in $(seq 1 60); do
-  docker exec "$PG" pg_isready -U rt -d rt >/dev/null 2>&1 && break
+  docker exec "$PG" psql -U rt -d rt -Atc "SELECT 1" >/dev/null 2>&1 && break
   sleep 1
 done
+docker exec "$PG" psql -U rt -d rt -Atc "SELECT 1" >/dev/null
 docker exec "$PG" psql -U rt -d rt -q \
   -c "CREATE TABLE public.events (id serial PRIMARY KEY, created_at timestamptz NOT NULL DEFAULT now())" \
   -c "INSERT INTO public.events SELECT FROM generate_series(1, 250)" \
