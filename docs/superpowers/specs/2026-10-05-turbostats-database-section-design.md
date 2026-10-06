@@ -179,7 +179,7 @@ tables:
   rows_exact_interval_seconds: 3600   # count(*) where a table asked for it
 
 report:
-  to: https://control.turbolytics.io
+  to: https://ingest.turbolytics.io/v1/turbostats
   credential: "{{ TURBOSTATS_CREDENTIAL }}"
   # statsd: localhost:8125            # the second output; the same facts as gauges
 ```

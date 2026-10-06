@@ -57,7 +57,7 @@ func TestConfig_ExampleLoads(t *testing.T) {
 	assert.Equal(t, "billing", f.Databases[1].Cluster)
 	assert.Equal(t, 60, f.Probe.IntervalSeconds)
 	assert.Equal(t, "estimate", f.Tables.Rows)
-	assert.Equal(t, "https://control.turbolytics.io", f.Report.To)
+	assert.Equal(t, "https://ingest.turbolytics.io/v1/turbostats", f.Report.To)
 	assert.Equal(t, "cred", f.Report.Credential)
 	assert.DeepEqual(t, []string{"sqlflow_*", "*_tmp"}, f.Tables.Discover.Exclude)
 }

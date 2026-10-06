@@ -1,5 +1,7 @@
 # dbhealth
 
+[![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/dbhealth)](https://hub.docker.com/r/turbolytics/dbhealth) · `docker pull turbolytics/dbhealth`
+
 Is my database serving? How close is it to its limits? Are its tables
 current? `dbhealth` asks one Postgres those questions every minute and
 reports the answers to [control](https://control.turbolytics.io),
@@ -19,7 +21,7 @@ databases:
     dsn: "{{ DBHEALTH_PRIMARY_DSN }}"
     name: billing-primary
 report:
-  to: https://control.turbolytics.io
+  to: https://ingest.turbolytics.io/v1/turbostats
   credential: "{{ TURBOSTATS_CREDENTIAL }}"
 EOF
 
@@ -61,7 +63,7 @@ tables:
   rows_exact_interval_seconds: 3600
 
 report:
-  to: https://control.turbolytics.io
+  to: https://ingest.turbolytics.io/v1/turbostats
   credential: "{{ TURBOSTATS_CREDENTIAL }}"
   # statsd: localhost:8125            # the same facts as gauges
 ```
