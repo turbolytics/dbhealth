@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
-	github.com/turbolytics/sql-flow v1.2.1-0.20261005200501-6e83acd5000c
+	github.com/turbolytics/sql-flow v1.2.1-0.20261006001419-778771d1441f
 	github.com/zeebo/assert v1.3.1
 	go.uber.org/zap v1.28.0
 	gopkg.in/yaml.v3 v3.0.1
