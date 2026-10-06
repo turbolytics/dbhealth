@@ -1,5 +1,7 @@
 # dbhealth
 
+[![Docker Pulls](https://img.shields.io/docker/pulls/turbolytics/dbhealth)](https://hub.docker.com/r/turbolytics/dbhealth) · `docker pull turbolytics/dbhealth`
+
 Is my database serving? How close is it to its limits? Are its tables
 current? `dbhealth` asks one Postgres those questions every minute and
 reports the answers to [control](https://control.turbolytics.io),
