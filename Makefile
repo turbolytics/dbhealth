@@ -1,4 +1,4 @@
-.PHONY: build test test-short
+.PHONY: build test test-short test-integration test-e2e fmt-check vet image release-test
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
@@ -21,6 +21,11 @@ test-short:
 KIND ?= postgres
 test-integration:
 	go test -race -count=1 ./internal/$(KIND)/
+
+# Against a real Postgres and a local control; see test/e2e/e2e_test.go
+# for the DBHEALTH_E2E_* variables it needs.
+test-e2e:
+	DBHEALTH_E2E=1 go test -count=1 -v ./test/e2e/
 
 fmt-check:
 	@test -z "$$(gofmt -l cmd internal $(wildcard test))" || { echo "gofmt these:"; gofmt -l cmd internal $(wildcard test); exit 1; }
