@@ -564,8 +564,10 @@ func TestCollect_TableWritesFromTableCounters(t *testing.T) {
 }
 
 // A table's schema rides as a hash every report; the report where the
-// hash moves carries each column's change, and the next carries none.
-func TestCollect_SchemaChangeIsReportedOnceWithItsDiff(t *testing.T) {
+// hash moves carries each column's change, the two after it carry the
+// same again, a report being a thing that can be lost, and the next
+// carries none.
+func TestCollect_SchemaChangeIsReportedThreeTimesWithItsDiff(t *testing.T) {
 	ck := newClock()
 	f := newFake(ck.now)
 	f.columns["public.t"] = []source.Column{{Name: "id", Type: "integer", NotNull: true}, {Name: "amount", Type: "integer"}, {Name: "legacy_id", Type: "text"}}
@@ -590,14 +592,22 @@ func TestCollect_SchemaChangeIsReportedOnceWithItsDiff(t *testing.T) {
 		{Column: "legacy_id", Change: "dropped", From: "text"},
 		{Column: "region", Change: "added", To: "text"},
 	}, d.Tables[0].SchemaChanges)
+	changed := d.Tables[0].SchemaHash
 
+	for i := 0; i < 2; i++ {
+		ck.advance(time.Minute)
+		d = c.Collect(context.Background())
+		assert.Equal(t, changed, d.Tables[0].SchemaHash)
+		assert.Equal(t, 4, len(d.Tables[0].SchemaChanges))
+	}
 	ck.advance(time.Minute)
 	d = c.Collect(context.Background())
 	assert.Equal(t, 0, len(d.Tables[0].SchemaChanges))
 }
 
 // Changes beyond the bundle's cap wait: a table whose changes do not fit
-// keeps its old reading and sends them in the next bundle.
+// keeps its old reading and sends them in the next bundle, ahead of
+// another table's resend.
 func TestCollect_SchemaChangesBeyondTheCapWaitForTheNextBundle(t *testing.T) {
 	ck := newClock()
 	f := newFake(ck.now)

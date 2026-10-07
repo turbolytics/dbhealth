@@ -61,7 +61,16 @@ type tableState struct {
 	// next reading against; nil until a reading carried columns.
 	columns    []source.Column
 	schemaHash string
+	// pending is the last diff sent, and resend how many more reports
+	// should carry it: a report can be lost, and the diff is the one
+	// thing a receiver cannot recover from the next.
+	pending []wire.DatabaseSchemaChange
+	resend  int
 }
+
+// schemaResends is how many reports after the first carry a diff again:
+// three in all, which outlasts a receiver's bad minute.
+const schemaResends = 2
 
 // New prepares a collector for one database. The target the bundle
 // carries is the DSN redacted to host:port/database.
@@ -160,8 +169,14 @@ func (c *Collector) collectFacts(ctx context.Context, now time.Time, d *wire.Dat
 
 	watched := c.watched(ctx, now, fail)
 	seen := make(map[string]bool, len(watched))
-	// The bundle's cap on schema changes, spent by the tables in order.
+	// The bundle's cap on schema changes, spent by the tables in order on
+	// the diffs seen this reading; what is left goes to resends.
 	schemaBudget := wire.MaxDatabaseSchemaChanges
+	type resend struct {
+		idx int
+		st  *tableState
+	}
+	var resends []resend
 	for _, t := range watched {
 		seen[t.Name] = true
 		st := c.last[t.Name]
@@ -206,7 +221,10 @@ func (c *Collector) collectFacts(ctx context.Context, now time.Time, d *wire.Dat
 					row.SchemaChanges = changes
 					schemaBudget -= len(changes)
 					st.columns, st.schemaHash = cols, row.SchemaHash
+					st.pending, st.resend = changes, schemaResends
 				}
+			case st.resend > 0:
+				resends = append(resends, resend{idx: len(d.Tables), st: st})
 			}
 		}
 		// A check that was attempted is a check that was due, whatever it
@@ -228,6 +246,18 @@ func (c *Collector) collectFacts(ctx context.Context, now time.Time, d *wire.Dat
 			row.Rows, row.RowsExact, row.CheckedAt = st.exactRows, true, st.exactAt
 		}
 		d.Tables = append(d.Tables, row)
+	}
+	// The diffs sent before ride again while the cap has room for them,
+	// three reports in all.
+	for _, r := range resends {
+		if r.idx >= len(d.Tables) || len(r.st.pending) > schemaBudget {
+			continue
+		}
+		d.Tables[r.idx].SchemaChanges = r.st.pending
+		schemaBudget -= len(r.st.pending)
+		if r.st.resend--; r.st.resend == 0 {
+			r.st.pending = nil
+		}
 	}
 	for name := range c.last {
 		if !seen[name] {
