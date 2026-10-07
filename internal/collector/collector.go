@@ -54,9 +54,13 @@ type tableState struct {
 	freshAt   time.Time
 	exactRows *int64
 	exactAt   time.Time
-	// counters and countersAt are the last reading, for the scan rates.
+	// counters and countersAt are the last reading, for the rates.
 	counters   source.TableCounters
 	countersAt time.Time
+	// columns and schemaHash are the schema as last reported, to diff the
+	// next reading against; nil until a reading carried columns.
+	columns    []source.Column
+	schemaHash string
 }
 
 // New prepares a collector for one database. The target the bundle
@@ -156,6 +160,8 @@ func (c *Collector) collectFacts(ctx context.Context, now time.Time, d *wire.Dat
 
 	watched := c.watched(ctx, now, fail)
 	seen := make(map[string]bool, len(watched))
+	// The bundle's cap on schema changes, spent by the tables in order.
+	schemaBudget := wire.MaxDatabaseSchemaChanges
 	for _, t := range watched {
 		seen[t.Name] = true
 		st := c.last[t.Name]
@@ -178,9 +184,31 @@ func (c *Collector) collectFacts(ctx context.Context, now time.Time, d *wire.Dat
 		}
 		row.CheckedAt = now
 		if !st.countersAt.IsZero() {
-			row.SeqScansPerSecond, row.IndexScansPerSecond = tableRates(st.counters, counters, now.Sub(st.countersAt))
+			tableRates(&row, st.counters, counters, now.Sub(st.countersAt))
 		}
 		st.counters, st.countersAt = counters, now
+		// The schema: its hash every report, and in the report where the
+		// hash moved, what changed, within the bundle's cap. A table whose
+		// changes do not fit keeps its last reading and sends them next
+		// time; a single table past the cap on its own is a rewrite, and
+		// sends the first of them.
+		if cols := counters.Columns; len(cols) > 0 {
+			row.SchemaHash = schemaHash(cols)
+			switch {
+			case st.columns == nil:
+				st.columns, st.schemaHash = cols, row.SchemaHash
+			case row.SchemaHash != st.schemaHash:
+				changes := diffColumns(st.columns, cols)
+				if len(changes) > wire.MaxDatabaseSchemaChanges {
+					changes = changes[:wire.MaxDatabaseSchemaChanges]
+				}
+				if len(changes) <= schemaBudget {
+					row.SchemaChanges = changes
+					schemaBudget -= len(changes)
+					st.columns, st.schemaHash = cols, row.SchemaHash
+				}
+			}
+		}
 		// A check that was attempted is a check that was due, whatever it
 		// returned: a broken column is retried on its interval, not every
 		// probe.

@@ -59,11 +59,13 @@ func rates(prev, now source.Counters) *wire.DatabaseLoad {
 	return l
 }
 
-// tableRates is a table's scan rates from two readings, by the same rules.
-func tableRates(prev, now source.TableCounters, elapsed time.Duration) (seq, idx *float64) {
+// tableRates fills a table's rates from two readings of its counters, by
+// the same rules: the scans and the writes a second over elapsed, absent
+// where a counter is -1 or went backwards.
+func tableRates(row *wire.DatabaseTable, prev, now source.TableCounters, elapsed time.Duration) {
 	secs := elapsed.Seconds()
 	if secs <= 0 {
-		return nil, nil
+		return
 	}
 	rate := func(a, b int64) *float64 {
 		if a < 0 || b < 0 || b < a {
@@ -72,5 +74,8 @@ func tableRates(prev, now source.TableCounters, elapsed time.Duration) (seq, idx
 		v := float64(b-a) / secs
 		return &v
 	}
-	return rate(prev.SeqScans, now.SeqScans), rate(prev.IdxScans, now.IdxScans)
+	row.SeqScansPerSecond, row.IndexScansPerSecond = rate(prev.SeqScans, now.SeqScans), rate(prev.IdxScans, now.IdxScans)
+	row.RowsInsertedPerSecond = rate(prev.Inserted, now.Inserted)
+	row.RowsUpdatedPerSecond = rate(prev.Updated, now.Updated)
+	row.RowsDeletedPerSecond = rate(prev.Deleted, now.Deleted)
 }

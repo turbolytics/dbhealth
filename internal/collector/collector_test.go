@@ -33,16 +33,18 @@ type fake struct {
 	loads         int
 	tableCounters bool
 	calls         map[string]int64
-	queries       int
-	discovers     int
-	exacts        map[string]int
-	freshes       map[string]int
-	now           func() time.Time
-	replicated    *wire.DatabaseReplication
+	// columns is each table's schema as the source reads it.
+	columns    map[string][]source.Column
+	queries    int
+	discovers  int
+	exacts     map[string]int
+	freshes    map[string]int
+	now        func() time.Time
+	replicated *wire.DatabaseReplication
 }
 
 func newFake(now func() time.Time) *fake {
-	return &fake{probeOK: true, tableErr: map[string]error{}, partial: map[string]error{}, exacts: map[string]int{}, freshes: map[string]int{}, now: now, calls: map[string]int64{}}
+	return &fake{probeOK: true, tableErr: map[string]error{}, partial: map[string]error{}, exacts: map[string]int{}, freshes: map[string]int{}, now: now, calls: map[string]int64{}, columns: map[string][]source.Column{}}
 }
 
 func (f *fake) Probe(ctx context.Context, timeout time.Duration) wire.DatabaseProbe {
@@ -117,14 +119,15 @@ func (f *fake) Table(ctx context.Context, t config.StaticTable, fresh, exact boo
 		at := f.now()
 		out.NewestAt = &at
 	}
-	counters := source.TableCounters{DeadRows: -1, SeqScans: -1, IdxScans: -1}
+	counters := source.TableCounters{DeadRows: -1, SeqScans: -1, IdxScans: -1, Inserted: -1, Updated: -1, Deleted: -1}
 	if f.tableCounters {
 		f.calls["table:"+t.Name]++
 		n := f.calls["table:"+t.Name]
-		counters = source.TableCounters{DeadRows: 5, SeqScans: 6 * n, IdxScans: 600 * n}
+		counters = source.TableCounters{DeadRows: 5, SeqScans: 6 * n, IdxScans: 600 * n, Inserted: 60 * n, Updated: 6 * n, Deleted: 0}
 		d := counters.DeadRows
 		out.DeadRows = &d
 	}
+	counters.Columns = f.columns[t.Name]
 	return out, counters, nil
 }
 
@@ -542,4 +545,76 @@ func TestCollect_WidestLoadFitsTheBundle(t *testing.T) {
 	raw, err := json.Marshal(wire.Bundle{Database: &d})
 	assert.NoError(t, err)
 	assert.That(t, len(raw) < 64<<10)
+}
+
+// A table's writes are rates from its counters, like its scans: absent on
+// the first reading, then inserted, updated and deleted a second.
+func TestCollect_TableWritesFromTableCounters(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	f.tableCounters = true
+	c := New(database(), static("estimate", "public.t"), probe(), f, ck.now)
+	d := c.Collect(context.Background())
+	assert.Nil(t, d.Tables[0].RowsInsertedPerSecond)
+	ck.advance(time.Minute)
+	d = c.Collect(context.Background())
+	assert.Equal(t, 1.0, *d.Tables[0].RowsInsertedPerSecond) // the fake adds 60 inserts a call
+	assert.Equal(t, 0.1, *d.Tables[0].RowsUpdatedPerSecond)
+	assert.Equal(t, 0.0, *d.Tables[0].RowsDeletedPerSecond)
+}
+
+// A table's schema rides as a hash every report; the report where the
+// hash moves carries each column's change, and the next carries none.
+func TestCollect_SchemaChangeIsReportedOnceWithItsDiff(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	f.columns["public.t"] = []source.Column{{Name: "id", Type: "integer", NotNull: true}, {Name: "amount", Type: "integer"}, {Name: "legacy_id", Type: "text"}}
+	c := New(database(), static("estimate", "public.t"), probe(), f, ck.now)
+	d := c.Collect(context.Background())
+	first := d.Tables[0].SchemaHash
+	assert.Equal(t, 16, len(first))
+	assert.Equal(t, 0, len(d.Tables[0].SchemaChanges))
+
+	ck.advance(time.Minute)
+	d = c.Collect(context.Background())
+	assert.Equal(t, first, d.Tables[0].SchemaHash)
+	assert.Equal(t, 0, len(d.Tables[0].SchemaChanges))
+
+	f.columns["public.t"] = []source.Column{{Name: "id", Type: "integer", NotNull: true}, {Name: "amount", Type: "numeric(12,2)", NotNull: true}, {Name: "region", Type: "text"}}
+	ck.advance(time.Minute)
+	d = c.Collect(context.Background())
+	assert.That(t, d.Tables[0].SchemaHash != first)
+	assert.DeepEqual(t, []wire.DatabaseSchemaChange{
+		{Column: "amount", Change: "retyped", From: "integer", To: "numeric(12,2)"},
+		{Column: "amount", Change: "nullability", From: "NULL", To: "NOT NULL"},
+		{Column: "legacy_id", Change: "dropped", From: "text"},
+		{Column: "region", Change: "added", To: "text"},
+	}, d.Tables[0].SchemaChanges)
+
+	ck.advance(time.Minute)
+	d = c.Collect(context.Background())
+	assert.Equal(t, 0, len(d.Tables[0].SchemaChanges))
+}
+
+// Changes beyond the bundle's cap wait: a table whose changes do not fit
+// keeps its old reading and sends them in the next bundle.
+func TestCollect_SchemaChangesBeyondTheCapWaitForTheNextBundle(t *testing.T) {
+	ck := newClock()
+	f := newFake(ck.now)
+	f.columns["public.a"] = []source.Column{{Name: "id", Type: "integer", NotNull: true}}
+	f.columns["public.b"] = []source.Column{{Name: "id", Type: "integer", NotNull: true}}
+	c := New(database(), static("estimate", "public.a", "public.b"), probe(), f, ck.now)
+	c.Collect(context.Background())
+	for i := 0; i < 50; i++ {
+		f.columns["public.a"] = append(f.columns["public.a"], source.Column{Name: fmt.Sprintf("a%d", i), Type: "text"})
+		f.columns["public.b"] = append(f.columns["public.b"], source.Column{Name: fmt.Sprintf("b%d", i), Type: "text"})
+	}
+	ck.advance(time.Minute)
+	d := c.Collect(context.Background())
+	assert.Equal(t, 50, len(d.Tables[0].SchemaChanges))
+	assert.Equal(t, 0, len(d.Tables[1].SchemaChanges))
+	ck.advance(time.Minute)
+	d = c.Collect(context.Background())
+	assert.Equal(t, 0, len(d.Tables[0].SchemaChanges))
+	assert.Equal(t, 50, len(d.Tables[1].SchemaChanges))
 }

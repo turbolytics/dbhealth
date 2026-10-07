@@ -352,8 +352,8 @@ func TestStatsD_DatagramsStayUnderTheMTU(t *testing.T) {
 			total++
 		}
 	}
-	// probe 3 + connections 3 + 50 tables × (rows, rows_exact, size) + collection 3
-	assert.Equal(t, 3+3+50*3+3, total)
+	// probe 3 + connections 3 + 50 tables × (rows, rows_exact, size, schema_changes) + collection 3
+	assert.Equal(t, 3+3+50*4+3, total)
 }
 
 // Findings from the review of #5.
@@ -603,6 +603,10 @@ func loaded(d wire.Database) wire.Database {
 		TransactionsPerSecond: &tps, RowsReadPerSecond: &rr, CacheHitRatio: &ratio}
 	d.Tables[0].DeadRows = &dead
 	d.Tables[0].SeqScansPerSecond = &seq
+	ins := 33.4
+	d.Tables[0].RowsInsertedPerSecond = &ins
+	d.Tables[0].SchemaHash = "9f2c1a7e4b3d8c05"
+	d.Tables[0].SchemaChanges = []wire.DatabaseSchemaChange{{Column: "region", Change: "added", To: "text"}}
 	return d
 }
 
@@ -666,6 +670,8 @@ func TestMetrics_LoadSeries(t *testing.T) {
 		`dbhealth_load_cache_hit_ratio{db="x"} 0.993`,
 		`dbhealth_table_dead_rows{db="x",table="public.usage_per_minute"} 1203`,
 		`dbhealth_table_seq_scans_per_second{db="x",table="public.usage_per_minute"} 0.1`,
+		`dbhealth_table_rows_inserted_per_second{db="x",table="public.usage_per_minute"} 33.4`,
+		`dbhealth_table_schema_changes{db="x",table="public.usage_per_minute"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("no series %q in:\n%s", want, body)

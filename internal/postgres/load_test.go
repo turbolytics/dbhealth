@@ -8,6 +8,7 @@ import (
 	"github.com/zeebo/assert"
 
 	"github.com/turbolytics/dbhealth/internal/config"
+	"github.com/turbolytics/dbhealth/internal/source"
 )
 
 func TestLoad_SampleCountsThisSession(t *testing.T) {
@@ -102,4 +103,19 @@ func TestTable_CarriesItsCounters(t *testing.T) {
 	assert.NotNil(t, row.DeadRows)
 	assert.Equal(t, counters.DeadRows, *row.DeadRows)
 	assert.Nil(t, row.SeqScansPerSecond)
+}
+
+// A table reading carries its columns in order, each with its type as
+// Postgres names it and whether it is NOT NULL, and its write counters.
+func TestTable_CarriesItsColumnsAndWriteCounters(t *testing.T) {
+	c := open(t, adminDSN)
+	_, counters, err := c.Table(context.Background(), config.StaticTable{Name: "public.events"}, false, false)
+	assert.NoError(t, err)
+	assert.DeepEqual(t, []source.Column{
+		{Name: "id", Type: "integer", NotNull: true},
+		{Name: "created_at", Type: "timestamp with time zone", NotNull: true},
+	}, counters.Columns)
+	assert.That(t, counters.Inserted >= 1000)
+	assert.That(t, counters.Updated >= 0)
+	assert.That(t, counters.Deleted >= 0)
 }

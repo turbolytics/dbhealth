@@ -160,6 +160,7 @@ func (m *metrics) instruments() error {
 		{"dbhealth_table_size_bytes", "the table on disk"},
 		{"dbhealth_table_newest_at_seconds", "max of the freshness column, Unix seconds"},
 		{"dbhealth_table_dead_rows", "rows deleted or updated and not yet reclaimed"},
+		{"dbhealth_table_schema_changes", "columns added, dropped or retyped since the last report"},
 		{"dbhealth_collection_queries", "queries the last interval ran"},
 		{"dbhealth_collection_duration_ms", "what the last interval cost"},
 		{"dbhealth_collection_errors", "queries that failed in the last interval"},
@@ -200,6 +201,18 @@ func (m *metrics) instruments() error {
 	if err != nil {
 		return err
 	}
+	tableIns, err := f64("dbhealth_table_rows_inserted_per_second", "rows inserted, from the table's own counter")
+	if err != nil {
+		return err
+	}
+	tableUpd, err := f64("dbhealth_table_rows_updated_per_second", "rows updated, from the table's own counter")
+	if err != nil {
+		return err
+	}
+	tableDel, err := f64("dbhealth_table_rows_deleted_per_second", "rows deleted, from the table's own counter")
+	if err != nil {
+		return err
+	}
 	lag, err := f64("dbhealth_replication_lag_seconds", "how far behind this endpoint is")
 	if err != nil {
 		return err
@@ -208,7 +221,7 @@ func (m *metrics) instruments() error {
 	if err != nil {
 		return err
 	}
-	all := []metric.Observable{lag, replicaLag, tableSeq, tableIdx}
+	all := []metric.Observable{lag, replicaLag, tableSeq, tableIdx, tableIns, tableUpd, tableDel}
 	for _, v := range g {
 		all = append(all, v)
 	}
@@ -259,6 +272,16 @@ func (m *metrics) instruments() error {
 				if t.IndexScansPerSecond != nil {
 					o.ObserveFloat64(tableIdx, *t.IndexScansPerSecond, tags)
 				}
+				if t.RowsInsertedPerSecond != nil {
+					o.ObserveFloat64(tableIns, *t.RowsInsertedPerSecond, tags)
+				}
+				if t.RowsUpdatedPerSecond != nil {
+					o.ObserveFloat64(tableUpd, *t.RowsUpdatedPerSecond, tags)
+				}
+				if t.RowsDeletedPerSecond != nil {
+					o.ObserveFloat64(tableDel, *t.RowsDeletedPerSecond, tags)
+				}
+				o.ObserveInt64(g["dbhealth_table_schema_changes"], int64(len(t.SchemaChanges)), tags)
 			}
 			if d.Load != nil {
 				for _, f := range loadFields(d.Load) {

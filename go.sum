@@ -139,6 +139,8 @@ github.com/turbolytics/sql-flow v1.2.1-0.20261006001419-778771d1441f h1:hYHZpS9m
 github.com/turbolytics/sql-flow v1.2.1-0.20261006001419-778771d1441f/go.mod h1:Vb8r0qyU5K0ExiVBrqfNyxaC0zdkUKgTgT4nBoZ5amI=
 github.com/turbolytics/sql-flow v1.2.1-0.20261006105252-183232d4616e h1:juM7zrMzIhOehzucU4SucbkztfZSqWhsx654ZsRXEkY=
 github.com/turbolytics/sql-flow v1.2.1-0.20261006105252-183232d4616e/go.mod h1:Vb8r0qyU5K0ExiVBrqfNyxaC0zdkUKgTgT4nBoZ5amI=
+github.com/turbolytics/sql-flow v1.2.1-0.20261007141134-54b89292d4af h1:H0Hr4JuxDM+1rIAQaS7C8YgJCPSQzM4bL5sLbjck1dM=
+github.com/turbolytics/sql-flow v1.2.1-0.20261007141134-54b89292d4af/go.mod h1:Vb8r0qyU5K0ExiVBrqfNyxaC0zdkUKgTgT4nBoZ5amI=
 github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=
 github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
 github.com/zeebo/assert v1.3.1 h1:vukIABvugfNMZMQO1ABsyQDJDTVQbn+LWSMy1ol1h6A=
