@@ -86,7 +86,7 @@ tables:
   discover:                           # every table in these schemas, up to max_tables
     schemas: [public]
     exclude: ["sqlflow_*", "*_tmp"]
-    freshness_columns: [updated_at, created_at, minute, ts]   # the first one a table has
+    freshness_columns: [bucket, minute, ts, created_at, updated_at]   # the first one a table has; event time before write time
     max_tables: 50
   # static:                           # or name them, so a schema change cannot add
   #   - name: public.usage_per_minute #   a two-billion-row table by accident

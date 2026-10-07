@@ -72,7 +72,7 @@ func TestConfig_DefaultsApply(t *testing.T) {
 	assert.Equal(t, 3600, f.Tables.RowsExactIntervalSeconds)
 	assert.NotNil(t, f.Tables.Discover)
 	assert.Equal(t, 0, len(f.Tables.Static))
-	assert.DeepEqual(t, []string{"updated_at", "created_at", "minute", "ts"}, f.Tables.Discover.FreshnessColumns)
+	assert.DeepEqual(t, []string{"bucket", "minute", "ts", "created_at", "updated_at"}, f.Tables.Discover.FreshnessColumns)
 	assert.Equal(t, 50, f.Tables.Discover.MaxTables)
 }
 

@@ -361,3 +361,18 @@ func TestReplication_StateColumnMayBeNull(t *testing.T) {
 	assert.Equal(t, "", r.State)
 	assert.Nil(t, r.LagSeconds)
 }
+
+// A rollup carries both its minute and when it was last written. Its
+// freshness is the minute: updated_at moves whenever a late event corrects
+// an old minute, and says only that the writer is alive. Event time comes
+// before write time by default.
+func TestDiscover_EventTimeBeatsWriteTime(t *testing.T) {
+	c := open(t, adminDSN)
+	ctx := context.Background()
+	_, err := c.pool.Exec(ctx, `CREATE TABLE public.posts_per_minute (bucket timestamptz NOT NULL, lang text, posts int, updated_at timestamptz NOT NULL DEFAULT now())`)
+	assert.NoError(t, err)
+	t.Cleanup(func() { _, _ = c.pool.Exec(ctx, `DROP TABLE public.posts_per_minute`) })
+
+	tables, _ := discover(t, c, config.Discover{Schemas: []string{"public"}})
+	assert.Equal(t, "bucket", byName(tables)["public.posts_per_minute"].FreshnessColumn)
+}
