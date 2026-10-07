@@ -155,8 +155,12 @@ var kinds = map[string]bool{
 // defaultPort is the kind's port when the DSN names none.
 const defaultPort = "5432"
 
-// DefaultFreshnessColumns is what discovery tries when the file names none.
-var DefaultFreshnessColumns = []string{"updated_at", "created_at", "minute", "ts"}
+// DefaultFreshnessColumns is what discovery tries when the file names none:
+// event time before write time. A rollup's bucket or minute says how
+// current the data is; its updated_at moves whenever a late event corrects
+// an old row, and says only that the writer is alive. created_at is an
+// event's own time on an append-only table, so it comes before updated_at.
+var DefaultFreshnessColumns = []string{"bucket", "minute", "ts", "created_at", "updated_at"}
 
 // Load reads path, decodes it, expands {{ NAME }} in every string from the
 // environment, applies the defaults and checks every rule.

@@ -165,7 +165,7 @@ tables:
   discover:
     schemas: [public]                 # default: every schema that is not the kind's own catalog
     exclude: ["sqlflow_*", "*_tmp"]   # globs on the table name
-    freshness_columns: [updated_at, created_at, minute, ts]   # the first that exists is the table's
+    freshness_columns: [bucket, minute, ts, created_at, updated_at]   # the first that exists is the table's; event time before write time
     max_tables: 50                    # a schema with 400 tables is a config decision, not a surprise
   # static:
   #   - name: public.usage_per_minute
