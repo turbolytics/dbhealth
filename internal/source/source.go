@@ -40,6 +40,19 @@ type Sample struct {
 // when the kind does not have one.
 type TableCounters struct {
 	DeadRows, SeqScans, IdxScans int64
+	// Inserted, Updated and Deleted are the system's write counters for
+	// the table; -1 where the kind has none.
+	Inserted, Updated, Deleted int64
+	// Columns is the table's schema as read: each column in the system's
+	// order, with its type as the system names it. The collector hashes
+	// it and diffs it against the last reading; nil when it was not read.
+	Columns []Column
+}
+
+// Column is one column of a table's schema.
+type Column struct {
+	Name, Type string
+	NotNull    bool
 }
 
 // ErrPartial wraps a Table error when the row returned beside it carries

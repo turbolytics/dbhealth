@@ -267,16 +267,21 @@ func (c *Client) Table(ctx context.Context, t config.StaticTable, fresh, exact b
 	schema, table := splitName(t.Name)
 	name := schema + "." + table
 	out := wire.DatabaseTable{Name: name, FreshnessColumn: t.FreshnessColumn}
-	counters := source.TableCounters{DeadRows: -1, SeqScans: -1, IdxScans: -1}
+	counters := source.TableCounters{DeadRows: -1, SeqScans: -1, IdxScans: -1, Inserted: -1, Updated: -1, Deleted: -1}
 
-	var live, dead, seq, idx *int64
+	var live, dead, seq, idx, ins, upd, del *int64
 	var size int64
 	var vacuum *time.Time
+	var columns *string
+	// The columns ride in the same read: name, type as Postgres names it
+	// and NOT NULL, in attribute order, unit- and record-separated.
 	err := c.row(ctx, `SELECT s.n_live_tup, pg_total_relation_size(c.oid), GREATEST(s.last_vacuum, s.last_autovacuum),
-		s.n_dead_tup, s.seq_scan, s.idx_scan
+		s.n_dead_tup, s.seq_scan, s.idx_scan, s.n_tup_ins, s.n_tup_upd, s.n_tup_del,
+		(SELECT string_agg(a.attname || E'\x1f' || format_type(a.atttypid, a.atttypmod) || E'\x1f' || a.attnotnull::text, E'\x1e' ORDER BY a.attnum)
+		   FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped)
 		FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 		LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
-		WHERE n.nspname = $1 AND c.relname = $2`, []any{schema, table}, &live, &size, &vacuum, &dead, &seq, &idx)
+		WHERE n.nspname = $1 AND c.relname = $2`, []any{schema, table}, &live, &size, &vacuum, &dead, &seq, &idx, &ins, &upd, &del, &columns)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, counters, fmt.Errorf("%s: no such table", name)
 	}
@@ -294,6 +299,23 @@ func (c *Client) Table(ctx context.Context, t config.StaticTable, fresh, exact b
 	}
 	if idx != nil {
 		counters.IdxScans = *idx
+	}
+	if ins != nil {
+		counters.Inserted = *ins
+	}
+	if upd != nil {
+		counters.Updated = *upd
+	}
+	if del != nil {
+		counters.Deleted = *del
+	}
+	if columns != nil && *columns != "" {
+		for _, rec := range strings.Split(*columns, "\x1e") {
+			f := strings.SplitN(rec, "\x1f", 3)
+			if len(f) == 3 {
+				counters.Columns = append(counters.Columns, source.Column{Name: f[0], Type: f[1], NotNull: f[2] == "true"})
+			}
+		}
 	}
 	if vacuum != nil {
 		v := vacuum.UTC()

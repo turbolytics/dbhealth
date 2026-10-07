@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"github.com/turbolytics/sql-flow/turbostats/wire"
 	"testing"
 	"time"
 
@@ -86,17 +87,20 @@ func TestRates_NoTimePassedIsNoRate(t *testing.T) {
 }
 
 func TestTableRates(t *testing.T) {
-	prev := source.TableCounters{DeadRows: 5, SeqScans: 10, IdxScans: 100}
-	now := source.TableCounters{DeadRows: 7, SeqScans: 16, IdxScans: 700}
-	seq, idx := tableRates(prev, now, 60*time.Second)
-	assert.Equal(t, 0.1, *seq)
-	assert.Equal(t, 10.0, *idx)
-	// A kind without the counter, a reset, and no time: none.
-	seq, idx = tableRates(source.TableCounters{SeqScans: -1, IdxScans: -1}, source.TableCounters{SeqScans: -1, IdxScans: -1}, time.Minute)
-	assert.Nil(t, seq)
-	assert.Nil(t, idx)
-	seq, _ = tableRates(now, prev, time.Minute)
-	assert.Nil(t, seq)
-	seq, _ = tableRates(prev, now, 0)
-	assert.Nil(t, seq)
+	prev := source.TableCounters{DeadRows: 5, SeqScans: 10, IdxScans: 100, Inserted: 1000, Updated: 10, Deleted: -1}
+	now := source.TableCounters{DeadRows: 7, SeqScans: 16, IdxScans: 700, Inserted: 1060, Updated: 10, Deleted: -1}
+	var row wire.DatabaseTable
+	tableRates(&row, prev, now, 60*time.Second)
+	assert.Equal(t, 0.1, *row.SeqScansPerSecond)
+	assert.Equal(t, 10.0, *row.IndexScansPerSecond)
+	assert.Equal(t, 1.0, *row.RowsInsertedPerSecond)
+	assert.Equal(t, 0.0, *row.RowsUpdatedPerSecond)
+	assert.Nil(t, row.RowsDeletedPerSecond) // a kind without the counter
+	// A reset, and no time: none.
+	row = wire.DatabaseTable{}
+	tableRates(&row, now, prev, time.Minute)
+	assert.Nil(t, row.SeqScansPerSecond)
+	assert.Nil(t, row.RowsInsertedPerSecond)
+	tableRates(&row, prev, now, 0)
+	assert.Nil(t, row.SeqScansPerSecond)
 }

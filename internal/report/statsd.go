@@ -89,6 +89,16 @@ func datagrams(db string, d *wire.Database) []string {
 		if t.IndexScansPerSecond != nil {
 			g("table.index_scans_per_second", *t.IndexScansPerSecond, tags)
 		}
+		if t.RowsInsertedPerSecond != nil {
+			g("table.rows_inserted_per_second", *t.RowsInsertedPerSecond, tags)
+		}
+		if t.RowsUpdatedPerSecond != nil {
+			g("table.rows_updated_per_second", *t.RowsUpdatedPerSecond, tags)
+		}
+		if t.RowsDeletedPerSecond != nil {
+			g("table.rows_deleted_per_second", *t.RowsDeletedPerSecond, tags)
+		}
+		g("table.schema_changes", int64(len(t.SchemaChanges)), tags)
 	}
 	if l := d.Load; l != nil {
 		for _, f := range loadFields(l) {
