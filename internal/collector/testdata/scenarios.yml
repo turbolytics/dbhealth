@@ -1,0 +1,364 @@
+# The collector's memory, as stories.
+#
+# Each scenario starts with tables and their columns, then ticks. A tick is
+# one collection: the clock moves to its time, the tick's events happen to
+# the database, the collector reads, and the expectation is checked against
+# what it would send. TestScenarios_Hold runs every one through the real
+# collector against a scripted database.
+#
+# A column is "name type", or "name type!" for NOT NULL.
+#
+# A tick:
+#   at:           when, from the scenario's start
+#   alter:        {table, add: [...], add_many: {prefix, count, type},
+#                  drop: [...], retype: {col: type}, notnull: [...],
+#                  nullable: [...], rename: {from: to}}
+#   write:        {table, inserted, updated, deleted}: the counters move
+#   reset:        a table whose counters go back to zero (a stats reset)
+#   restart:      the collector starts over, remembering nothing
+#   down / up:    the database stops answering, or answers again
+#   drop_table / create_table: {table, columns}
+#   expect:       per table: hash (set, same, moved, none), changes (none,
+#                 some, same, or ["column change from → to"]), inserted_per_second
+#                 (a number, or none), error (text the bundle's errors
+#                 carry); or for the bundle: tables, errors (counts).
+#
+# A change is the diff of two readings. The report where the hash moved
+# carries it and the two after carry it again; a report is a thing that can
+# be lost. At most 60 changes a bundle, by table and then column; a table
+# whose changes do not fit waits, a first diff ahead of a resend.
+
+# --- shape: what a change looks like ---------------------------------------
+
+- name: no change
+  about: shape
+  description: A table that keeps its shape sends the same hash every report and never a change.
+  tables:
+    events: [id integer!, amount integer, created_at timestamp with time zone!]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set, changes: none}]
+    - at: 1m
+      expect: [{table: events, hash: same, changes: none}]
+    - at: 2m
+      expect: [{table: events, hash: same, changes: none}]
+
+- name: a column added
+  about: shape
+  description: The next reading says which column, and its type.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      alter: {table: events, add: [region text]}
+      expect: [{table: events, hash: moved, changes: ["region added text"]}]
+
+- name: a column dropped
+  about: shape
+  description: The next reading says which column, and the type it had.
+  tables:
+    events: [id integer!, amount integer, legacy_id text]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      alter: {table: events, drop: [legacy_id]}
+      expect: [{table: events, hash: moved, changes: ["legacy_id dropped text"]}]
+
+- name: a column retyped
+  about: shape
+  description: The type before and the type after, as the system names them.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      alter: {table: events, retype: {amount: "numeric(12,2)"}}
+      expect: [{table: events, hash: moved, changes: ["amount retyped integer → numeric(12,2)"]}]
+
+- name: a column made NOT NULL
+  about: shape
+  description: Nullability is a change of its own; the type did not move.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      alter: {table: events, notnull: [amount]}
+      expect: [{table: events, hash: moved, changes: ["amount nullability NULL → NOT NULL"]}]
+    - at: 2m
+      alter: {table: events, nullable: [amount]}
+      expect: [{table: events, hash: moved, changes: ["amount nullability NOT NULL → NULL"]}]
+
+- name: several changes in one migration
+  about: shape
+  description: >
+    One ALTER retypes and constrains a column, drops one and adds one. The
+    diff lists the old columns in their order, each with what happened to
+    it, then the new.
+  tables:
+    events: [id integer!, amount integer, legacy_id text]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      alter: {table: events, retype: {amount: "numeric(12,2)"}, notnull: [amount], drop: [legacy_id], add: [region text]}
+      expect:
+        - table: events
+          hash: moved
+          changes: ["amount retyped integer → numeric(12,2)", "amount nullability NULL → NOT NULL", "legacy_id dropped text", "region added text"]
+
+- name: a column renamed
+  about: shape
+  description: >
+    A rename is a drop and an add: the collector reads columns, not the
+    statement, and a renamed column is one it has not seen in a place it
+    no longer sees one.
+  tables:
+    events: [id integer!, legacy_id text]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      alter: {table: events, rename: {legacy_id: legacy_ref}}
+      expect: [{table: events, hash: moved, changes: ["legacy_id dropped text", "legacy_ref added text"]}]
+
+- name: two tables change in one tick
+  about: shape
+  description: Each table carries its own diff; one does not speak for the other.
+  tables:
+    events: [id integer!, amount integer]
+    users: [id integer!, email text]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}, {table: users, hash: set}]
+    - at: 1m
+      alter: {table: events, add: [region text]}
+      expect: [{table: events, hash: moved, changes: ["region added text"]}, {table: users, hash: same, changes: none}]
+
+# --- time: what happens across readings ------------------------------------
+
+- name: a diff rides in three reports
+  about: time
+  description: >
+    The report where the hash moved carries the diff, the two after carry
+    it again, and the fourth carries none. A report is a thing that can be
+    lost, and the diff is the one thing the next report cannot recover.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set, changes: none}]
+    - at: 1m
+      alter: {table: events, add: [region text]}
+      expect: [{table: events, hash: moved, changes: ["region added text"]}]
+    - at: 2m
+      expect: [{table: events, hash: same, changes: same}]
+    - at: 3m
+      expect: [{table: events, hash: same, changes: same}]
+    - at: 4m
+      expect: [{table: events, hash: same, changes: none}]
+
+- name: a change during the resend of another
+  about: time
+  description: >
+    A second change before the first's resends are done: the new diff
+    replaces the old and its own three reports start.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      alter: {table: events, add: [region text]}
+      expect: [{table: events, hash: moved, changes: ["region added text"]}]
+    - at: 2m
+      alter: {table: events, drop: [amount]}
+      expect: [{table: events, hash: moved, changes: ["amount dropped integer"]}]
+    - at: 3m
+      expect: [{table: events, changes: same}]
+    - at: 4m
+      expect: [{table: events, changes: same}]
+    - at: 5m
+      expect: [{table: events, changes: none}]
+
+- name: dbhealth comes online
+  about: time
+  description: The first reading sends the hash and no diff; there is nothing to diff against.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set, changes: none}]
+
+- name: a restart between readings
+  about: time
+  description: >
+    The schema changes while the collector is down. When it starts again
+    it has no previous reading: it sends the new hash and no diff. A
+    receiver sees the hash move and knows the shape changed, not how.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 5m
+      alter: {table: events, add: [region text]}
+      restart: true
+      expect: [{table: events, hash: moved, changes: none}]
+    - at: 6m
+      expect: [{table: events, hash: same, changes: none}]
+
+- name: a restart with no change
+  about: time
+  description: The hash after the restart is the hash before it; nothing is said.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      restart: true
+      expect: [{table: events, hash: same, changes: none}]
+
+- name: the same shape twice over
+  about: time
+  description: >
+    A column added and dropped again lands on the first hash: two moves,
+    each with its diff.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      alter: {table: events, add: [region text]}
+      expect: [{table: events, hash: moved, changes: ["region added text"]}]
+    - at: 2m
+      alter: {table: events, drop: [region]}
+      expect: [{table: events, hash: moved, changes: ["region dropped text"]}]
+
+# --- source: when the database does not answer -----------------------------
+
+- name: a change while the database is down
+  about: source
+  description: >
+    The probe fails, so no table is read and nothing is remembered. When
+    it answers again the diff is against the last good reading, and says
+    everything that changed meanwhile.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      down: true
+      alter: {table: events, add: [region text]}
+      expect: [{tables: 0, table: events, hash: none}]
+    - at: 2m
+      down: false
+      expect: [{table: events, hash: moved, changes: ["region added text"]}]
+
+- name: a table dropped
+  about: source
+  description: The reading is an error naming the table; it carries no row and no hash.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      drop_table: events
+      expect: [{tables: 0, error: "events: no such table", table: events, hash: none}]
+
+- name: a table dropped and created again
+  about: source
+  description: >
+    Created again with a different shape, it is read against the last
+    reading the collector kept: the diff says what the new table is not.
+  tables:
+    events: [id integer!, amount integer]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      drop_table: events
+      expect: [{tables: 0}]
+    - at: 2m
+      create_table: {table: events, columns: [id integer!, "amount numeric(12,2)"]}
+      expect: [{table: events, hash: moved, changes: ["amount retyped integer → numeric(12,2)"]}]
+
+# --- cap: sixty changes a bundle -------------------------------------------
+
+- name: a schema rewrite
+  about: cap
+  description: >
+    Sixty-one columns added at once: the diff is the first sixty, and the
+    hash moved. A rewrite is seen as a rewrite, not listed in full.
+  tables:
+    events: [id integer!]
+  ticks:
+    - at: 0s
+      expect: [{table: events, hash: set}]
+    - at: 1m
+      alter: {table: events, add_many: {prefix: c, count: 61, type: text}}
+      expect: [{table: events, hash: moved}]
+
+- name: two tables over the cap together
+  about: cap
+  description: >
+    Fifty changes on each of two tables: the first table's go in this
+    bundle; the second's, a tick later, go ahead of the first table's
+    resend, and that resend waits for the bundle after.
+  tables:
+    a: [id integer!]
+    b: [id integer!]
+  ticks:
+    - at: 0s
+      expect: [{table: a, hash: set}, {table: b, hash: set}]
+    - at: 1m
+      alter: {table: a, add_many: {prefix: a, count: 50, type: text}}
+      expect: [{table: a, hash: moved, changes: some}, {table: b, hash: same, changes: none}]
+    - at: 2m
+      alter: {table: b, add_many: {prefix: b, count: 50, type: text}}
+      expect: [{table: a, hash: same, changes: none}, {table: b, hash: moved, changes: some}]
+    - at: 3m
+      expect: [{table: a, hash: same, changes: some}, {table: b, hash: same, changes: none}]
+
+# --- writes: the table's own counters --------------------------------------
+
+- name: writes two readings apart
+  about: writes
+  description: The first reading has no rate; the next says rows inserted a second from the counters' difference.
+  tables:
+    events: [id integer!]
+  ticks:
+    - at: 0s
+      expect: [{table: events, inserted_per_second: none}]
+    - at: 1m
+      write: {table: events, inserted: 60}
+      expect: [{table: events, inserted_per_second: 1.0}]
+    - at: 2m
+      expect: [{table: events, inserted_per_second: 0}]
+
+- name: a stats reset
+  about: writes
+  description: Counters that went backwards give no rate, not a negative one; the reading after is a rate again.
+  tables:
+    events: [id integer!]
+  ticks:
+    - at: 0s
+      write: {table: events, inserted: 1000}
+    - at: 1m
+      write: {table: events, inserted: 60}
+      expect: [{table: events, inserted_per_second: 1.0}]
+    - at: 2m
+      reset: events
+      expect: [{table: events, inserted_per_second: none}]
+    - at: 3m
+      write: {table: events, inserted: 120}
+      expect: [{table: events, inserted_per_second: 2.0}]
