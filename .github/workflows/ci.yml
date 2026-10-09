@@ -1,4 +1,5 @@
-# Four layers, each a job, on every push and pull request:
+# Four layers, each a job, on every push to main and on every pull request
+# that changes more than docs:
 #
 #   fmt          gofmt, go vet
 #   unit         go test -short: no Docker, every package inside 10 seconds
@@ -9,7 +10,15 @@ name: ci
 on:
   push:
     branches: [main]
+  # A change to docs or Markdown alone cannot break a build, so it skips CI.
+  # docs/coverage still runs it.
   pull_request:
+    branches: [main]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**.md"
+      - "docs/coverage/**"
 
 permissions:
   contents: read
