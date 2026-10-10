@@ -135,14 +135,8 @@ github.com/tklauser/go-sysconf v0.4.0 h1:7H0uAN+7RkwWRaxhYXDLqa5V3LPrJeV8wmD9dRU
 github.com/tklauser/go-sysconf v0.4.0/go.mod h1:8mTNWyog7H+MpKijp4VmKJAd2bbYQ2zuUwkYRbUArPI=
 github.com/tklauser/numcpus v0.12.0 h1:NR85qdvHA9pFse3x3weVZ0r0ST8R6l5RHbZrlRaqob4=
 github.com/tklauser/numcpus v0.12.0/go.mod h1:ABHeXzJnr/qqwguhClkZKT1/8VABcYrsyUiUGobwWJg=
-github.com/turbolytics/sql-flow v1.2.1-0.20261006001419-778771d1441f h1:hYHZpS9mS6KX+dQ+r4SyCAAeoGZcdzGNvgjB2O19d58=
-github.com/turbolytics/sql-flow v1.2.1-0.20261006001419-778771d1441f/go.mod h1:Vb8r0qyU5K0ExiVBrqfNyxaC0zdkUKgTgT4nBoZ5amI=
-github.com/turbolytics/sql-flow v1.2.1-0.20261006105252-183232d4616e h1:juM7zrMzIhOehzucU4SucbkztfZSqWhsx654ZsRXEkY=
-github.com/turbolytics/sql-flow v1.2.1-0.20261006105252-183232d4616e/go.mod h1:Vb8r0qyU5K0ExiVBrqfNyxaC0zdkUKgTgT4nBoZ5amI=
-github.com/turbolytics/sql-flow v1.2.1-0.20261007141134-54b89292d4af h1:H0Hr4JuxDM+1rIAQaS7C8YgJCPSQzM4bL5sLbjck1dM=
-github.com/turbolytics/sql-flow v1.2.1-0.20261007141134-54b89292d4af/go.mod h1:Vb8r0qyU5K0ExiVBrqfNyxaC0zdkUKgTgT4nBoZ5amI=
-github.com/turbolytics/sql-flow v1.2.1-0.20261007144747-8ba670918775 h1:MP0enT6i6dpSUZieN0W8apMrPxRJ2/nwLzrAybb5o9Q=
-github.com/turbolytics/sql-flow v1.2.1-0.20261007144747-8ba670918775/go.mod h1:Vb8r0qyU5K0ExiVBrqfNyxaC0zdkUKgTgT4nBoZ5amI=
+github.com/turbolytics/sql-flow v1.2.1-0.20261010111356-be0f44f6e40d h1:Qut6stqkZBt9IxZrYI6zvWTy7EQPEuFOG+MpCrItFFk=
+github.com/turbolytics/sql-flow v1.2.1-0.20261010111356-be0f44f6e40d/go.mod h1:Vb8r0qyU5K0ExiVBrqfNyxaC0zdkUKgTgT4nBoZ5amI=
 github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=
 github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
 github.com/zeebo/assert v1.3.1 h1:vukIABvugfNMZMQO1ABsyQDJDTVQbn+LWSMy1ol1h6A=

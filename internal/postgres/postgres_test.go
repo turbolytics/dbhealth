@@ -178,6 +178,37 @@ func TestResources_AllFields(t *testing.T) {
 	assert.That(t, r.Memory.SharedBuffersBytes > 0)
 }
 
+// A database counts its tables in its own schemas, partitions included,
+// and how many of them are partitions. A view is not a table, and the
+// catalogs are not counted. The database is the test's own, so tables
+// other tests create cannot move the count.
+func TestResources_CountsTablesAndPartitions(t *testing.T) {
+	admin := open(t, adminDSN)
+	ctx := context.Background()
+	_, err := admin.pool.Exec(ctx, `CREATE DATABASE counts`)
+	assert.NoError(t, err)
+	c := open(t, strings.Replace(adminDSN, "/app?", "/counts?", 1))
+	for _, q := range []string{
+		`CREATE TABLE public.a (id int)`,
+		`CREATE SCHEMA other`,
+		`CREATE TABLE other.b (id int)`,
+		`CREATE TABLE public.p (at date) PARTITION BY RANGE (at)`,
+		`CREATE TABLE public.p_1 PARTITION OF public.p FOR VALUES FROM ('2026-10-01') TO ('2026-10-02')`,
+		`CREATE TABLE public.p_2 PARTITION OF public.p FOR VALUES FROM ('2026-10-02') TO ('2026-10-03')`,
+		`CREATE VIEW public.v AS SELECT * FROM public.a`,
+	} {
+		_, err := c.pool.Exec(ctx, q)
+		assert.NoError(t, err)
+	}
+
+	r, errs := c.Resources(ctx)
+	assert.Equal(t, 0, len(errs))
+	assert.NotNil(t, r.TableCount)
+	assert.Equal(t, 5, *r.TableCount)
+	assert.NotNil(t, r.PartitionCount)
+	assert.Equal(t, 2, *r.PartitionCount)
+}
+
 // The review-focus case: a role without pg_read_all_stats sees other
 // sessions' rows in pg_stat_activity with their type, state, wait event
 // and transaction start hidden. A count of what it can see would be a
@@ -360,7 +391,7 @@ func TestQueries_CountEveryRoundTrip(t *testing.T) {
 	c.Probe(context.Background(), time.Second)
 	assert.Equal(t, before+1, c.Queries())
 	c.Resources(context.Background())
-	assert.Equal(t, before+5, c.Queries())
+	assert.Equal(t, before+6, c.Queries())
 }
 
 // Findings from the review of #4.

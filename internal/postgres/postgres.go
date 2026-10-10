@@ -136,7 +136,7 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	return v, nil
 }
 
-// Resources is how close the endpoint is to its limits. Each of the four
+// Resources is how close the endpoint is to its limits. Each of the five
 // queries runs on its own; a failure is an error naming the view and the
 // other fields still come back.
 func (c *Client) Resources(ctx context.Context) (*wire.DatabaseResources, []wire.DatabaseError) {
@@ -173,6 +173,18 @@ func (c *Client) Resources(ctx context.Context) (*wire.DatabaseResources, []wire
 		fail("pg_database_size", err)
 	} else {
 		r.SizeBytes = &size
+	}
+
+	// Tables and views share pg_class; only r and p are tables. A
+	// partition is a table with relispartition set.
+	var tables, partitions int
+	if err := c.row(ctx, `SELECT count(*), count(*) FILTER (WHERE c.relispartition)
+		FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE c.relkind IN ('r', 'p') AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'`,
+		nil, &tables, &partitions); err != nil {
+		fail("pg_class", err)
+	} else {
+		r.TableCount, r.PartitionCount = &tables, &partitions
 	}
 
 	var oldest int64

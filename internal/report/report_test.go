@@ -96,7 +96,7 @@ func database(okAt time.Time) func(context.Context) wire.Database {
 		return wire.Database{
 			Kind: "postgres", Target: "pg.internal:5432/billing", Cluster: "billing",
 			Probe:      wire.DatabaseProbe{OK: true, LatencyMs: 3, LastOKAt: &okAt},
-			Resources:  &wire.DatabaseResources{Connections: &wire.DatabaseConnections{Used: 18, Max: 100}},
+			Resources:  &wire.DatabaseResources{Connections: &wire.DatabaseConnections{Used: 18, Max: 100}, TableCount: &tableCount, PartitionCount: &partitionCount},
 			Tables:     []wire.DatabaseTable{{Name: "public.usage_per_minute", Rows: &n, RowsExact: true, SizeBytes: 4096, CheckedAt: okAt}},
 			Collection: wire.DatabaseCollection{Queries: 9, DurationMs: 12, Errors: []wire.DatabaseError{}},
 		}
@@ -118,6 +118,9 @@ func newReporter(t *testing.T, c *control, cred string, now func() time.Time, in
 var okAt = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 
 func fixedNow() time.Time { return okAt.Add(5 * time.Second) }
+
+// Control's own database, the day these counts were added.
+var tableCount, partitionCount = 172, 148
 
 func TestReport_BundleShape(t *testing.T) {
 	cred, priv := credential(t)
@@ -315,6 +318,8 @@ func TestStatsD_GaugesMirrorTheBundle(t *testing.T) {
 		"dbhealth.probe.latency_ms:3|g|#db:billing-primary",
 		"dbhealth.connections.used:18|g|#db:billing-primary",
 		"dbhealth.connections.max:100|g|#db:billing-primary",
+		"dbhealth.tables:172|g|#db:billing-primary",
+		"dbhealth.partitions:148|g|#db:billing-primary",
 		"dbhealth.table.rows:7832|g|#db:billing-primary,table:public.usage_per_minute",
 		"dbhealth.table.size_bytes:4096|g|#db:billing-primary,table:public.usage_per_minute",
 		"dbhealth.collection.queries:9|g|#db:billing-primary",
@@ -352,8 +357,8 @@ func TestStatsD_DatagramsStayUnderTheMTU(t *testing.T) {
 			total++
 		}
 	}
-	// probe 3 + connections 3 + 50 tables × (rows, rows_exact, size, schema_changes) + collection 3
-	assert.Equal(t, 3+3+50*4+3, total)
+	// probe 3 + connections 3 + tables and partitions 2 + 50 tables × (rows, rows_exact, size, schema_changes) + collection 3
+	assert.Equal(t, 3+3+2+50*4+3, total)
 }
 
 // Findings from the review of #5.
@@ -483,6 +488,8 @@ func TestMetrics_SeriesMirrorTheBundle(t *testing.T) {
 		`dbhealth_probe_latency_ms{db="billing-primary"} 3`,
 		`dbhealth_connections_used{db="billing-primary"} 18`,
 		`dbhealth_connections_max{db="billing-primary"} 100`,
+		`dbhealth_tables{db="billing-primary"} 172`,
+		`dbhealth_partitions{db="billing-primary"} 148`,
 		`dbhealth_table_rows{db="billing-primary",table="public.usage_per_minute"} 7832`,
 		`dbhealth_table_rows_exact{db="billing-primary",table="public.usage_per_minute"} 1`,
 		`dbhealth_table_size_bytes{db="billing-primary",table="public.usage_per_minute"} 4096`,

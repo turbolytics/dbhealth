@@ -46,6 +46,7 @@ same names; StatsD the same with dots.
 | **serving?** | `dbhealth_probe_ok`, `dbhealth_probe_latency_ms`, `dbhealth_probe_consecutive_failures` | one `SELECT 1`, timed |
 | **how busy?** | `dbhealth_load_sessions_active_now` / `_waiting_now` / `_idle_in_transaction_now`, `dbhealth_load_longest_query_seconds`; `dbhealth_load_transactions_per_second`, `_rows_read_per_second`, `_rows_written_per_second`, `_cache_hit_ratio`, `_temp_bytes_per_second`, `_deadlocks_per_second` | `pg_stat_activity` now; `pg_stat_database` counters, two readings apart |
 | **near its limits?** | `dbhealth_connections_used` / `_max` / `_waiting`, `dbhealth_size_bytes`, `dbhealth_oldest_transaction_seconds`, `dbhealth_memory_shared_buffers_bytes` | `pg_stat_activity`, `pg_database_size` |
+| **how many tables?** | `dbhealth_tables`, `dbhealth_partitions` — every table in the database's own schemas, and how many are partitions; a partition count that keeps climbing is retention that stopped | `pg_class` |
 | **tables current?** | `dbhealth_table_newest_at_seconds`, `dbhealth_table_rows`, `dbhealth_table_rows_exact`, `dbhealth_table_size_bytes`, `dbhealth_table_dead_rows`, `_seq_scans_per_second` / `_index_scans_per_second` — labelled `table` | `max(timestamp column)`, `n_live_tup` or `count(*)`, `pg_stat_user_tables` |
 | **tables written?** | `dbhealth_table_rows_inserted_per_second` / `_updated_` / `_deleted_` — the table's volume as its own counters say it, not an estimate | `pg_stat_user_tables`, two readings apart |
 | **schema changed?** | `dbhealth_table_schema_changes` — columns added, dropped, retyped or changed in nullability since the last report; control shows which, with the type before and after | `pg_attribute`, in the same read |
@@ -59,7 +60,7 @@ interval's, from the database's own counters two readings apart; the
 first interval after a start or a stats reset sends none. Query text is
 never read.
 
-**What it costs the database:** one `SELECT 1`, six catalog reads, and per
+**What it costs the database:** one `SELECT 1`, seven catalog reads, and per
 table one estimate and one `max()`, every interval. `count(*)` only where
 you ask, once an hour. `load: {enabled: false}` drops two of the reads.
 
