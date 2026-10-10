@@ -153,6 +153,8 @@ func (m *metrics) instruments() error {
 		{"dbhealth_connections_max", "max_connections"},
 		{"dbhealth_connections_waiting", "connections waiting on a lock"},
 		{"dbhealth_size_bytes", "the database on disk"},
+		{"dbhealth_tables", "tables in the database's own schemas, partitions included"},
+		{"dbhealth_partitions", "tables that are partitions"},
 		{"dbhealth_oldest_transaction_seconds", "age of the oldest open transaction"},
 		{"dbhealth_memory_shared_buffers_bytes", "shared_buffers"},
 		{"dbhealth_table_rows", "rows, estimated unless dbhealth_table_rows_exact is 1"},
@@ -245,6 +247,12 @@ func (m *metrics) instruments() error {
 				}
 				if r.SizeBytes != nil {
 					o.ObserveInt64(g["dbhealth_size_bytes"], *r.SizeBytes, base)
+				}
+				if r.TableCount != nil {
+					o.ObserveInt64(g["dbhealth_tables"], int64(*r.TableCount), base)
+				}
+				if r.PartitionCount != nil {
+					o.ObserveInt64(g["dbhealth_partitions"], int64(*r.PartitionCount), base)
 				}
 				if r.OldestTransactionSeconds != nil {
 					o.ObserveInt64(g["dbhealth_oldest_transaction_seconds"], *r.OldestTransactionSeconds, base)

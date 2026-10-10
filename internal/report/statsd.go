@@ -63,6 +63,12 @@ func datagrams(db string, d *wire.Database) []string {
 		if r.SizeBytes != nil {
 			g("size_bytes", *r.SizeBytes, base)
 		}
+		if r.TableCount != nil {
+			g("tables", *r.TableCount, base)
+		}
+		if r.PartitionCount != nil {
+			g("partitions", *r.PartitionCount, base)
+		}
 		if r.OldestTransactionSeconds != nil {
 			g("oldest_transaction_seconds", *r.OldestTransactionSeconds, base)
 		}
