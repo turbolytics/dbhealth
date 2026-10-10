@@ -216,7 +216,7 @@ func (c *Client) Discover(ctx context.Context, d config.Discover) ([]config.Stat
 		LEFT JOIN information_schema.columns ic
 		  ON ic.table_schema = n.nspname AND ic.table_name = c.relname AND ic.data_type LIKE 'timestamp%'
 		LEFT JOIN want w ON w.col = ic.column_name
-		WHERE c.relkind IN ('r', 'p') AND `+schemaFilter+`
+		WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition AND `+schemaFilter+`
 		ORDER BY n.nspname, c.relname, w.ord NULLS LAST`, args...)
 	if err != nil {
 		return nil, 0, errors.New("discovery: " + sqlError(err))
@@ -275,12 +275,24 @@ func (c *Client) Table(ctx context.Context, t config.StaticTable, fresh, exact b
 	var columns *string
 	// The columns ride in the same read: name, type as Postgres names it
 	// and NOT NULL, in attribute order, unit- and record-separated.
-	err := c.row(ctx, `SELECT s.n_live_tup, pg_total_relation_size(c.oid), GREATEST(s.last_vacuum, s.last_autovacuum),
-		s.n_dead_tup, s.seq_scan, s.idx_scan, s.n_tup_ins, s.n_tup_upd, s.n_tup_del,
+	//
+	// A partitioned table holds no rows; its partitions do. Every number
+	// is summed over the table's partition tree. pg_partition_tree lists
+	// nothing for a table that is not partitioned, so the table joins its
+	// own tree, and UNION drops it where the tree already lists it. The
+	// newest vacuum is the newest of any partition.
+	err := c.row(ctx, `SELECT st.live, COALESCE(st.size, 0), st.vacuum,
+		st.dead, st.seq, st.idx, st.ins, st.upd, st.del,
 		(SELECT string_agg(a.attname || E'\x1f' || format_type(a.atttypid, a.atttypmod) || E'\x1f' || a.attnotnull::text, E'\x1e' ORDER BY a.attnum)
 		   FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped)
 		FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-		LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+		CROSS JOIN LATERAL (
+		  SELECT sum(s.n_live_tup)::bigint AS live, sum(pg_total_relation_size(t.relid))::bigint AS size,
+		         max(GREATEST(s.last_vacuum, s.last_autovacuum)) AS vacuum,
+		         sum(s.n_dead_tup)::bigint AS dead, sum(s.seq_scan)::bigint AS seq, sum(s.idx_scan)::bigint AS idx,
+		         sum(s.n_tup_ins)::bigint AS ins, sum(s.n_tup_upd)::bigint AS upd, sum(s.n_tup_del)::bigint AS del
+		  FROM (SELECT relid, isleaf FROM pg_partition_tree(c.oid) UNION SELECT c.oid, c.relkind <> 'p') t
+		  LEFT JOIN pg_stat_user_tables s ON s.relid = t.relid AND t.isleaf) st
 		WHERE n.nspname = $1 AND c.relname = $2`, []any{schema, table}, &live, &size, &vacuum, &dead, &seq, &idx, &ins, &upd, &del, &columns)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, counters, fmt.Errorf("%s: no such table", name)
