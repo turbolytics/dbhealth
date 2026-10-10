@@ -26,6 +26,8 @@ var _ collector.Source = (*Client)(nil)
 //	public.events(id, created_at)  1,000 rows
 //	public.blobs(id, data)         no timestamp column
 //	audit.log(ts)                  a second schema
+//	parts.reports(received_at)     partitioned by day: two days of 100
+//	                               rows each, and an empty default
 //	role reader                    CONNECT and SELECT, no pg_read_all_stats
 var (
 	adminDSN   string
@@ -79,6 +81,12 @@ func seed(ctx context.Context) error {
 		`INSERT INTO public.blobs (data) VALUES ('\x00'), ('\x01')`,
 		`CREATE SCHEMA audit`,
 		`CREATE TABLE audit.log (ts timestamptz)`,
+		`CREATE SCHEMA parts`,
+		`CREATE TABLE parts.reports (id int, received_at timestamptz NOT NULL) PARTITION BY RANGE (received_at)`,
+		`CREATE TABLE parts.reports_2026_10_04 PARTITION OF parts.reports FOR VALUES FROM ('2026-10-04') TO ('2026-10-05')`,
+		`CREATE TABLE parts.reports_2026_10_05 PARTITION OF parts.reports FOR VALUES FROM ('2026-10-05') TO ('2026-10-06')`,
+		`CREATE TABLE parts.reports_default PARTITION OF parts.reports DEFAULT`,
+		`INSERT INTO parts.reports SELECT g, '2026-10-04T00:00:00Z'::timestamptz + (g * 864 || ' seconds')::interval FROM generate_series(0, 199) g`,
 		// The insert's counts are pending in this backend until a flush;
 		// vacuum then counts the heap itself, so the two must not add up.
 		`SELECT pg_stat_force_next_flush()`,
@@ -261,6 +269,40 @@ func TestDiscover_ExcludeAndMaxTables(t *testing.T) {
 	tables, dropped = discover(t, c, config.Discover{Schemas: []string{"public"}, MaxTables: 1})
 	assert.Equal(t, 1, len(tables))
 	assert.Equal(t, 1, dropped)
+}
+
+func TestDiscover_APartitionedTableIsItsParent(t *testing.T) {
+	c := open(t, adminDSN)
+	tables, dropped := discover(t, c, config.Discover{Schemas: []string{"parts"}, FreshnessColumns: []string{"received_at"}})
+	assert.Equal(t, 0, dropped)
+	assert.DeepEqual(t, []config.StaticTable{{Name: "parts.reports", FreshnessColumn: "received_at"}}, tables)
+}
+
+func TestTable_APartitionedTableSumsItsPartitions(t *testing.T) {
+	c := open(t, adminDSN)
+	got, counters, err := c.Table(context.Background(), config.StaticTable{Name: "parts.reports", FreshnessColumn: "received_at"}, true, false)
+	assert.NoError(t, err)
+
+	var size int64
+	assert.NoError(t, c.pool.QueryRow(context.Background(),
+		`SELECT sum(pg_total_relation_size(relid)) FROM pg_partition_tree('parts.reports')`).Scan(&size))
+	assert.That(t, size > 0)
+	assert.Equal(t, size, got.SizeBytes)
+	assert.NotNil(t, got.Rows)
+	assert.Equal(t, int64(200), *got.Rows)
+	assert.False(t, got.RowsExact)
+	assert.Equal(t, int64(200), counters.Inserted)
+	assert.NotNil(t, got.LastVacuumAt)
+	assert.True(t, got.NewestAt.Equal(time.Date(2026, 10, 5, 23, 45, 36, 0, time.UTC)))
+	assert.Equal(t, 2, len(counters.Columns))
+}
+
+func TestTable_APartitionNamedAloneIsCountedOnce(t *testing.T) {
+	c := open(t, adminDSN)
+	got, counters, err := c.Table(context.Background(), config.StaticTable{Name: "parts.reports_2026_10_04"}, false, false)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(100), *got.Rows)
+	assert.Equal(t, int64(100), counters.Inserted)
 }
 
 func TestTable_EstimateThenExact(t *testing.T) {

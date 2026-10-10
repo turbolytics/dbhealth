@@ -118,6 +118,13 @@ dbhealth run -c dbhealth.yml
 Each replica is its own entry: a primary that answers says nothing about
 the replica your application reads from. `cluster` groups them in control.
 
+A partitioned table is one table: discovery lists the parent and skips
+its partitions, and the parent reports the sum of its partitions' rows,
+size, scans and writes, with the newest vacuum of any of them. A table
+partitioned by day stays one entry in `max_tables` however many days it
+holds. A dropped partition takes its counters with it, so the parent
+sends no write or scan rates for that interval.
+
 | environment (no file) | |
 |---|---|
 | `DBHEALTH_DSN` | the connection string; required |
