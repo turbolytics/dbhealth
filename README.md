@@ -76,10 +76,14 @@ databases:
     dsn: "{{ DBHEALTH_PRIMARY_DSN }}"   # from the environment; control sees host:port/db only
     name: billing-primary
     cluster: billing
+    labels:                           # yours; control filters and groups the fleet by them
+      client: acme
+      env: prod
   - kind: postgres
     dsn: "{{ DBHEALTH_REPLICA_A_DSN }}"
     name: billing-replica-a
     cluster: billing
+    labels: {client: acme, env: prod}
 
 probe:
   interval_seconds: 60
@@ -119,6 +123,14 @@ dbhealth run -c dbhealth.yml
 Each replica is its own entry: a primary that answers says nothing about
 the replica your application reads from. `cluster` groups them in control.
 
+`labels` are your own names for a database, such as the client it belongs
+to. Each report carries them, and control filters and groups the fleet by
+them. A database takes at most 10. A key is a lowercase letter, then
+lowercase letters, digits or `_`, up to 32 characters. A value is up to 64
+characters. A key cannot be a name the report already defines, such as
+`name`, `kind` or `cluster`. Labels go to control alone: the Prometheus,
+OpenTelemetry and StatsD outputs do not carry them.
+
 A partitioned table is one table: discovery lists the parent and skips
 its partitions, and the parent reports the sum of its partitions' rows,
 size, scans and writes, with the newest vacuum of any of them. A table
@@ -131,6 +143,7 @@ sends no write or scan rates for that interval.
 | `DBHEALTH_DSN` | the connection string; required |
 | `DBHEALTH_KEY` | the control credential |
 | `DBHEALTH_NAME`, `DBHEALTH_CLUSTER` | default to the database's name |
+| `DBHEALTH_LABELS` | labels, as `client=acme,env=prod` |
 | `DBHEALTH_METRICS` | `prometheus` or `otlp` |
 | `DBHEALTH_LOAD` | `false` to leave the load facts out |
 | `DBHEALTH_OTLP`, `DBHEALTH_LISTEN`, `DBHEALTH_STATSD` | the collector; the listen address (`:8000`); StatsD |

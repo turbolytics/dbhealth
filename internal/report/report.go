@@ -52,6 +52,9 @@ type Instance struct {
 	// database.cluster, which control requires to be equal. Empty is the
 	// endpoint's own name.
 	Cluster string
+	// Labels are the operator's, already checked by the config. Each
+	// bundle carries them as instance.labels; none is no key at all.
+	Labels map[string]string
 	// Collect is the collector's interval. Its context ends with the
 	// interval: a database that answers nothing cannot hold the next one.
 	Collect func(context.Context) wire.Database
@@ -301,6 +304,7 @@ func (r *Reporter) bundle(inst Instance, d *wire.Database, exit *wire.Exit) wire
 			Arch:       runtime.GOOS + "/" + runtime.GOARCH,
 			ConfigHash: r.hash,
 			Runtime:    "dbhealth",
+			Labels:     inst.Labels,
 		},
 		// RSS is the kernel's number, which the Go runtime cannot give;
 		// the contract reads an absent one as not measured, which is true.

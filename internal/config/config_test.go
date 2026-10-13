@@ -55,6 +55,10 @@ func TestConfig_ExampleLoads(t *testing.T) {
 	assert.Equal(t, 2, len(f.Databases))
 	assert.Equal(t, "billing-primary", f.Databases[0].Name)
 	assert.Equal(t, "billing", f.Databases[1].Cluster)
+	// Both ways the example writes labels: a block, and a flow map.
+	for _, db := range f.Databases {
+		assert.DeepEqual(t, map[string]string{"client": "acme", "env": "prod"}, db.Labels)
+	}
 	assert.Equal(t, 60, f.Probe.IntervalSeconds)
 	assert.Equal(t, "estimate", f.Tables.Rows)
 	assert.Equal(t, "https://ingest.turbolytics.io/v1/turbostats", f.Report.To)
@@ -457,4 +461,98 @@ func TestFromEnv_MetricsWithoutAKey(t *testing.T) {
 	_, err = FromEnv()
 	assert.Error(t, err)
 	contains(t, err.Error(), "report.credential")
+}
+
+// Labels reach the database they are written under, a {{ NAME }} in a
+// value is expanded, and a database without them has none.
+func TestConfig_LabelsReachTheirDatabase(t *testing.T) {
+	t.Setenv("CLIENT", "acme")
+	f, err := Load(write(t, `
+databases:
+  - kind: postgres
+    dsn: postgres://u@h:5432/billing
+    labels:
+      client: "{{ CLIENT }}"
+      env: prod
+  - kind: postgres
+    dsn: postgres://u@h:5432/orders
+report:
+  statsd: localhost:8125
+`))
+	assert.NoError(t, err)
+	assert.DeepEqual(t, map[string]string{"client": "acme", "env": "prod"}, f.Databases[0].Labels)
+	assert.Nil(t, f.Databases[1].Labels)
+}
+
+// Every label rule is checked when the file loads, not by control when a
+// report is refused. The error names the database and the key, and never
+// the value.
+func TestConfig_LabelRules(t *testing.T) {
+	long := strings.Repeat("x", MaxLabelValueLen+1)
+	var eleven strings.Builder
+	for i := range MaxLabels + 1 {
+		fmt.Fprintf(&eleven, "      l%d: v\n", i)
+	}
+	for name, tc := range map[string]struct {
+		labels string
+		want   []string
+	}{
+		"too many":      {eleven.String(), []string{"databases[0].labels", "11 labels; at most 10"}},
+		"uppercase key": {"      Client: acme\n", []string{"databases[0].labels.Client", "lowercase letter"}},
+		"dashed key":    {"      client-id: acme\n", []string{"databases[0].labels.client-id", "lowercase letter"}},
+		"long key":      {"      " + strings.Repeat("k", MaxLabelKeyLen+1) + ": v\n", []string{"the key is 33 characters; at most 32"}},
+		"long value":    {"      client: " + long + "\n", []string{"databases[0].labels.client", "the value is 65 characters; at most 64"}},
+		"name":          {"      name: billing\n", []string{"databases[0].labels.name", "already defines"}},
+		"kind":          {"      kind: oltp\n", []string{"databases[0].labels.kind", "already defines"}},
+		"cluster":       {"      cluster: billing\n", []string{"databases[0].labels.cluster", "already defines"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			msg := loadErr(t, `
+databases:
+  - kind: postgres
+    dsn: postgres://u@h:5432/d
+    labels:
+`+tc.labels+`report:
+  statsd: localhost:8125
+`)
+			contains(t, msg, tc.want...)
+			assert.False(t, strings.Contains(msg, long))
+		})
+	}
+}
+
+// With no file, DBHEALTH_LABELS sets the database's labels as
+// key=value pairs. Spaces around a pair are trimmed, and a value may
+// hold "=".
+func TestFromEnv_Labels(t *testing.T) {
+	t.Setenv("DBHEALTH_DSN", "postgres://u@pg.internal:5432/billing")
+	t.Setenv("DBHEALTH_KEY", "sfp_key")
+	f, err := FromEnv()
+	assert.NoError(t, err)
+	assert.Nil(t, f.Databases[0].Labels)
+
+	t.Setenv("DBHEALTH_LABELS", "client=acme, env=prod,query=a=b,")
+	f, err = FromEnv()
+	assert.NoError(t, err)
+	assert.DeepEqual(t, map[string]string{"client": "acme", "env": "prod", "query": "a=b"}, f.Databases[0].Labels)
+}
+
+// A malformed DBHEALTH_LABELS is refused, and the error names the
+// variable, so it is never mistaken for a file's.
+func TestFromEnv_LabelRefusals(t *testing.T) {
+	t.Setenv("DBHEALTH_DSN", "postgres://u@pg.internal:5432/billing")
+	t.Setenv("DBHEALTH_KEY", "sfp_key")
+	for value, want := range map[string]string{
+		"client=acme,prod":        "item 2 has no =",
+		"client=acme,client=beta": "client is set twice",
+		"Client=acme":             "DBHEALTH_LABELS.Client",
+		"cluster=billing":         "already defines",
+	} {
+		t.Setenv("DBHEALTH_LABELS", value)
+		_, err := FromEnv()
+		if err == nil {
+			t.Fatalf("FromEnv accepted DBHEALTH_LABELS=%q", value)
+		}
+		contains(t, err.Error(), "DBHEALTH_LABELS", want)
+	}
 }
