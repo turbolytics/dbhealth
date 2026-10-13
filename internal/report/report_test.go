@@ -463,6 +463,32 @@ func TestReport_NoClusterIsItsOwn(t *testing.T) {
 	assert.Equal(t, "orders-pg", b.Database.Cluster)
 }
 
+// An instance's labels ride each of its bundles as instance.labels, which
+// control stores and filters the fleet by. An instance without labels
+// sends no labels key.
+func TestReport_LabelsRideTheInstance(t *testing.T) {
+	cred, priv := credential(t)
+	c := newControl(t, priv)
+	r, _ := newReporter(t, c, cred, fixedNow,
+		Instance{Name: "billing-primary", Labels: map[string]string{"client": "acme", "env": "prod"}, Collect: database(okAt)},
+		Instance{Name: "orders-pg", Collect: database(okAt)})
+	r.Once(context.Background())
+	c.mu.Lock()
+	raw := append([][]byte(nil), c.raw...)
+	c.mu.Unlock()
+	byID := map[string][]byte{}
+	for i, b := range c.posts() {
+		byID[b.Instance.ID] = raw[i]
+		if b.Instance.ID == "dbhealth-billing-primary" {
+			assert.DeepEqual(t, map[string]string{"client": "acme", "env": "prod"}, b.Instance.Labels)
+		}
+	}
+	assert.Equal(t, 2, len(byID))
+	assert.True(t, strings.Contains(string(byID["dbhealth-billing-primary"]), `"labels":{"client":"acme","env":"prod"}`))
+	assert.False(t, strings.Contains(string(byID["dbhealth-orders-pg"]), `"labels"`))
+	assert.Equal(t, 0, len(c.bad))
+}
+
 // Prometheus: the same facts as the StatsD gauges, scraped.
 
 func scrape(t *testing.T, r *Reporter) string {

@@ -15,6 +15,7 @@ import (
 	"path"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -44,6 +45,11 @@ type Database struct {
 	// database with no replicas is its own cluster, and control groups
 	// endpoints by it.
 	Cluster string
+	// Labels are the operator's own, such as client: acme or env: prod.
+	// Each report carries them as instance.labels, and control filters
+	// and groups a fleet by them. They go to control alone: the StatsD and
+	// OpenTelemetry outputs do not carry them.
+	Labels map[string]string
 }
 
 // Probe is one round trip per interval, per database.
@@ -234,6 +240,15 @@ func expandEnv(v reflect.Value) error {
 			for i := 0; i < v.Len(); i++ {
 				walk(v.Index(i))
 			}
+		case reflect.Map:
+			// A map's values cannot be set in place: each is copied out,
+			// expanded and put back.
+			for _, k := range v.MapKeys() {
+				e := reflect.New(v.Type().Elem()).Elem()
+				e.Set(v.MapIndex(k))
+				walk(e)
+				v.SetMapIndex(k, e)
+			}
 		}
 	}
 	walk(v)
@@ -319,6 +334,7 @@ const DefaultReportTo = "https://ingest.turbolytics.io"
 //	DBHEALTH_KEY        the credential
 //	DBHEALTH_NAME       the instance name; defaults to the database's name
 //	DBHEALTH_CLUSTER    the cluster; defaults to the name
+//	DBHEALTH_LABELS     labels, as client=acme,env=prod
 //	DBHEALTH_REPORT_TO  control's ingest; defaults to DefaultReportTo
 //	DBHEALTH_STATSD     host:port for StatsD gauges
 //	DBHEALTH_METRICS    prometheus or otlp
@@ -343,6 +359,10 @@ func FromEnv() (*File, error) {
 			name = target[i+1:]
 		}
 	}
+	labels, err := parseLabels(os.Getenv("DBHEALTH_LABELS"))
+	if err != nil {
+		return nil, err
+	}
 	in := file{
 		Databases: []Database{
 			{
@@ -350,6 +370,7 @@ func FromEnv() (*File, error) {
 				DSN:     dsn,
 				Name:    name,
 				Cluster: os.Getenv("DBHEALTH_CLUSTER"),
+				Labels:  labels,
 			},
 		},
 	}
@@ -415,6 +436,9 @@ func (f *File) validate() error {
 			return fmt.Errorf("databases[%d].name: %q is a duplicate of databases[%d]", i, db.Name, j)
 		}
 		seen[db.Name] = i
+		if err := checkLabels(fmt.Sprintf("databases[%d].labels", i), db.Labels); err != nil {
+			return err
+		}
 	}
 	t := f.Tables
 	if t.Discover != nil && len(t.Static) > 0 {
@@ -470,6 +494,83 @@ func (f *File) validate() error {
 		return errors.New("report.credential: is required when report.to is set")
 	}
 	return nil
+}
+
+// The label bounds are TurboStats': they keep a report a fixed shape and a
+// bounded size, and control refuses a report that breaks them.
+const (
+	MaxLabels        = 10
+	MaxLabelKeyLen   = 32
+	MaxLabelValueLen = 64
+)
+
+// labelKey is a name control can filter on without escaping it.
+var labelKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// reservedLabels are the names a report or this file already defines. A
+// label that shadows one makes two different things share a name. They are
+// sql-flow's, with kind, which the instance carries, and cluster, which
+// this file sets.
+var reservedLabels = map[string]bool{
+	"id": true, "name": true, "version": true, "commit": true, "arch": true,
+	"config_hash": true, "source_type": true, "sink_type": true, "handler_type": true,
+	"runtime": true, "runtime_version": true, "reporter_version": true,
+	"kind": true, "cluster": true,
+}
+
+// checkLabels applies the label rules. An error names the key and never
+// the value: a value can be a secret written in the wrong place.
+func checkLabels(at string, labels map[string]string) error {
+	if len(labels) > MaxLabels {
+		return fmt.Errorf("%s: %d labels; at most %d", at, len(labels), MaxLabels)
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	// Sorted, so a file with two bad labels names the same one every run.
+	sort.Strings(keys)
+	for _, k := range keys {
+		switch v := labels[k]; {
+		case len(k) > MaxLabelKeyLen:
+			return fmt.Errorf("%s.%s: the key is %d characters; at most %d", at, k, len(k), MaxLabelKeyLen)
+		case !labelKey.MatchString(k):
+			return fmt.Errorf("%s.%s: a key is a lowercase letter, then lowercase letters, digits or _", at, k)
+		case reservedLabels[k]:
+			return fmt.Errorf("%s.%s: %s is a name the report already defines", at, k, k)
+		case len(v) > MaxLabelValueLen:
+			return fmt.Errorf("%s.%s: the value is %d characters; at most %d", at, k, len(v), MaxLabelValueLen)
+		}
+	}
+	return nil
+}
+
+// parseLabels reads DBHEALTH_LABELS: key=value pairs, separated by commas.
+// A value may hold "=" but not ",". Empty is no labels.
+func parseLabels(s string) (map[string]string, error) {
+	var labels map[string]string
+	for i, item := range strings.Split(s, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(item, "=")
+		if !ok {
+			return nil, fmt.Errorf("DBHEALTH_LABELS: item %d has no =; write key=value,key=value", i+1)
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		if _, dup := labels[k]; dup {
+			return nil, fmt.Errorf("DBHEALTH_LABELS: %s is set twice", k)
+		}
+		labels[k] = v
+	}
+	if err := checkLabels("DBHEALTH_LABELS", labels); err != nil {
+		return nil, err
+	}
+	return labels, nil
 }
 
 var urlScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://`)

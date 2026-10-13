@@ -106,7 +106,7 @@ func serve(f *config.File, path string) int {
 		}
 		defer client.Close()
 		c := collector.New(db, f.Tables, f.Probe, client, time.Now).WithLoad(f.Load)
-		instances = append(instances, report.Instance{Name: db.Name, Cluster: db.Cluster, Collect: c.Collect})
+		instances = append(instances, instanceOf(db, c.Collect))
 		log.Info("watching", zap.String("instance", db.Name), zap.String("target", c.Target()))
 	}
 
@@ -166,4 +166,9 @@ func configHash(path string) string {
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// instanceOf is what the reporter sends for one database in the file.
+func instanceOf(db config.Database, collect func(context.Context) wire.Database) report.Instance {
+	return report.Instance{Name: db.Name, Cluster: db.Cluster, Labels: db.Labels, Collect: collect}
 }

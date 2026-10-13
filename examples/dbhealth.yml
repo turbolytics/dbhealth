@@ -4,10 +4,14 @@ databases:
     dsn: "{{ DBHEALTH_PRIMARY_DSN }}"   # from the environment; the bundle carries host:port/db only
     name: billing-primary               # the instance name control shows
     cluster: billing
+    labels:                             # yours; control filters and groups the fleet by them
+      client: acme
+      env: prod
   - kind: postgres
     dsn: "{{ DBHEALTH_REPLICA_A_DSN }}"
     name: billing-replica-a
     cluster: billing
+    labels: {client: acme, env: prod}
 
 probe:
   interval_seconds: 60                # one probe and one bundle per database per interval

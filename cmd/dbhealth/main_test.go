@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/zeebo/assert"
+
+	"github.com/turbolytics/dbhealth/internal/config"
 )
 
 // The release verifies an image by running `dbhealth version` on each
@@ -22,4 +24,15 @@ func TestVersion_PrintsTheBuildsVersion(t *testing.T) {
 	n, _ := r.Read(out)
 	assert.Equal(t, 0, code)
 	assert.Equal(t, "dbhealth dev\n", string(out[:n]))
+}
+
+// Each database's name, cluster and labels from the file reach the
+// reporter, which sends them in every bundle.
+func TestInstanceOf_CarriesTheFilesFields(t *testing.T) {
+	db := config.Database{Name: "billing-primary", Cluster: "billing",
+		Labels: map[string]string{"client": "acme"}}
+	inst := instanceOf(db, nil)
+	assert.Equal(t, "billing-primary", inst.Name)
+	assert.Equal(t, "billing", inst.Cluster)
+	assert.DeepEqual(t, map[string]string{"client": "acme"}, inst.Labels)
 }

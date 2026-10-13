@@ -59,12 +59,18 @@ func setup(t *testing.T) (env, string) {
 // and returns the log.
 func run(t *testing.T, e env, bin, name, tables string) (stop func() string) {
 	t.Helper()
+	return runWith(t, e, bin, name, "", tables)
+}
+
+// runWith is run with more lines under the database, such as its labels.
+func runWith(t *testing.T, e env, bin, name, database, tables string) (stop func() string) {
+	t.Helper()
 	cfg := filepath.Join(t.TempDir(), "dbhealth.yml")
 	body := fmt.Sprintf(`databases:
   - kind: postgres
     dsn: "{{ DBHEALTH_E2E_DSN }}"
     name: %s
-probe:
+%sprobe:
   interval_seconds: %d
   timeout_seconds: 3
 tables:
@@ -74,7 +80,7 @@ tables:
 report:
   to: %s
   credential: "{{ DBHEALTH_E2E_CREDENTIAL }}"
-`, name, int(interval.Seconds()), tables, int(interval.Seconds()), int(interval.Seconds()), e.control)
+`, name, database, int(interval.Seconds()), tables, int(interval.Seconds()), int(interval.Seconds()), e.control)
 	assert.NoError(t, os.WriteFile(cfg, []byte(body), 0o600))
 	cmd := exec.Command(bin, "run", "-c", cfg)
 	cmd.Env = append(os.Environ(), "DBHEALTH_E2E_DSN="+e.dsn, "DBHEALTH_E2E_CREDENTIAL="+e.credential)
@@ -266,6 +272,31 @@ func TestE2E_TheDSNIsNowhere(t *testing.T) {
 		raw, _ := json.Marshal(b)
 		assert.False(t, leaks(string(raw)))
 	}
+}
+
+// A database's labels reach control: in the bundle it verified, and in
+// the column its fleet filters read.
+func TestE2E_LabelsReachControl(t *testing.T) {
+	e, bin := setup(t)
+	name := fmt.Sprintf("e2e-labels-%d", time.Now().Unix())
+	stop := runWith(t, e, bin, name, "    labels:\n      client: acme\n      env: e2e\n",
+		"  discover:\n    schemas: [public]\n  rows: estimate")
+	defer stop()
+	want := map[string]string{"client": "acme", "env": "e2e"}
+	b := await(t, e, name, "a bundle", func(b []wire.Bundle) bool { return len(b) > 0 })
+	assert.DeepEqual(t, want, b[0].Instance.Labels)
+
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, e.controlDB)
+	assert.NoError(t, err)
+	defer conn.Close(ctx)
+	var raw []byte
+	assert.NoError(t, conn.QueryRow(ctx, `SELECT s.labels FROM segments s
+		JOIN instances i ON i.id = s.instance WHERE i.instance_id = $1
+		ORDER BY s.started_at DESC LIMIT 1`, "dbhealth-"+name).Scan(&raw))
+	var got map[string]string
+	assert.NoError(t, json.Unmarshal(raw, &got))
+	assert.DeepEqual(t, want, got)
 }
 
 // Under the metering stack's workers, the load facts move: transactions
