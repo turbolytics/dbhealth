@@ -3,6 +3,7 @@ package report
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +31,7 @@ type control struct {
 	raw    [][]byte
 	bad    []string // signature or header failures
 	status []int    // answers to give, in order; 200 after the list runs out
+	says   []string // bodies for those answers, in order; the envelope after
 }
 
 func newControl(t *testing.T, priv ed25519.PrivateKey) *control {
@@ -58,9 +60,13 @@ func newControl(t *testing.T, priv ed25519.PrivateKey) *control {
 		if len(c.status) > 0 {
 			status, c.status = c.status[0], c.status[1:]
 		}
+		say := `{"v":1,"commands":[]}`
+		if len(c.says) > 0 {
+			say, c.says = c.says[0], c.says[1:]
+		}
 		w.Header().Set("Content-Type", wire.MediaType)
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(`{"v":1,"commands":[]}`))
+		_, _ = w.Write([]byte(say))
 	}))
 	t.Cleanup(c.srv.Close)
 	return c
@@ -200,6 +206,86 @@ func TestReport_ARefusedPostIsLoggedOnceAndRetriedNextInterval(t *testing.T) {
 	assert.That(t, strings.Contains(warns[0].Message, "failing"))
 	infos := logs.FilterLevelExact(zap.InfoLevel).FilterMessageSnippet("recovered").All()
 	assert.Equal(t, 1, len(infos))
+}
+
+// Control's answer to a refused report is its reason. The warning carries
+// it after the status, so the operator reads what to fix in dbhealth's
+// own log: a bare "401 Unauthorized" reads the same for a wrong key and a
+// wrong clock.
+func TestReport_ARefusalLogsControlsReason(t *testing.T) {
+	cred, priv := credential(t)
+	c := newControl(t, priv)
+	c.status = []int{http.StatusUnauthorized}
+	c.says = []string{"this report's clock is 10 min ahead of Control's, outside the 5 min window.\n" +
+		"Set the time on the machine that sends it.\n"}
+	r, logs := newReporter(t, c, cred, fixedNow, Instance{Name: "x", Collect: database(okAt)})
+	r.Once(context.Background())
+	warns := logs.FilterLevelExact(zap.WarnLevel).All()
+	assert.Equal(t, 1, len(warns))
+	assert.Equal(t, "receiver answered 401 Unauthorized: this report's clock is 10 min ahead of Control's, "+
+		"outside the 5 min window. Set the time on the machine that sends it.", warns[0].ContextMap()["error"])
+}
+
+// A reason is read only so far: a receiver that answers megabytes does not
+// put them in the log.
+func TestReport_TheReasonIsBounded(t *testing.T) {
+	cred, priv := credential(t)
+	c := newControl(t, priv)
+	c.status = []int{http.StatusForbidden}
+	c.says = []string{strings.Repeat("x", 10000)}
+	r, logs := newReporter(t, c, cred, fixedNow, Instance{Name: "x", Collect: database(okAt)})
+	r.Once(context.Background())
+	warns := logs.FilterLevelExact(zap.WarnLevel).All()
+	assert.Equal(t, 1, len(warns))
+	msg := warns[0].ContextMap()["error"].(string)
+	assert.Equal(t, len("receiver answered 403 Forbidden: ")+maxReason, len(msg))
+}
+
+// A run of refusals warns once while its reason holds, and again when the
+// reason changes: a key fixed while the clock is still off says so, where
+// a debug line would hide it.
+func TestReport_ANewReasonIsWarnedAgain(t *testing.T) {
+	cred, priv := credential(t)
+	c := newControl(t, priv)
+	key := "Control cannot verify this report: its key is unknown, revoked or expired."
+	clock := "this report's clock is 10 min ahead of Control's."
+	c.status = []int{401, 401, 401, 401}
+	c.says = []string{key, key, clock, clock}
+	r, logs := newReporter(t, c, cred, fixedNow, Instance{Name: "x", Collect: database(okAt)})
+	for range 4 {
+		r.Once(context.Background())
+	}
+	warns := logs.FilterLevelExact(zap.WarnLevel).All()
+	assert.Equal(t, 2, len(warns))
+	assert.That(t, strings.HasSuffix(warns[0].ContextMap()["error"].(string), key))
+	assert.That(t, strings.HasSuffix(warns[1].ContextMap()["error"].(string), clock))
+}
+
+// Every bundle a process sends carries one process.id, 16 random bytes in
+// hex, the final one included; another process draws another. Control
+// tells two dbhealths under one instance id apart by it, and says a
+// collision only on its evidence.
+func TestReport_EveryBundleCarriesTheProcessID(t *testing.T) {
+	cred, priv := credential(t)
+	c := newControl(t, priv)
+	r, _ := newReporter(t, c, cred, fixedNow, Instance{Name: "x", Collect: database(okAt)})
+	r.Once(context.Background())
+	r.Once(context.Background())
+	r.Final(context.Background(), wire.Exit{Reason: "SIGTERM"})
+	posts := c.posts()
+	assert.Equal(t, 3, len(posts))
+	id := posts[0].Process.ID
+	assert.Equal(t, 32, len(id))
+	_, err := hex.DecodeString(id)
+	assert.NoError(t, err)
+	for _, p := range posts {
+		assert.Equal(t, id, p.Process.ID)
+	}
+
+	other, _ := newReporter(t, c, cred, fixedNow, Instance{Name: "x", Collect: database(okAt)})
+	other.Once(context.Background())
+	posts = c.posts()
+	assert.NotEqual(t, id, posts[len(posts)-1].Process.ID)
 }
 
 func TestReport_OneBundlePerDatabasePerInterval(t *testing.T) {

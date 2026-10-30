@@ -98,10 +98,17 @@ type Reporter struct {
 	now         func() time.Time
 	client      *http.Client
 	startedAt   time.Time
-	rand        *rand.Rand
+	// processID is drawn once at start and sent as process.id on every
+	// bundle, so control tells two processes under one instance id apart:
+	// two dbhealths with one DBHEALTH_NAME and one key otherwise interleave
+	// as one endpoint, and control does not guess.
+	processID string
+	rand      *rand.Rand
 
-	mu      sync.Mutex
-	failing map[string]bool
+	mu sync.Mutex
+	// failing is each instance's last failure, empty while posts succeed.
+	// A new one is warned, so a fixed key that leaves a wrong clock says so.
+	failing map[string]string
 }
 
 // New checks the config and prepares the reporter. The credential error
@@ -109,7 +116,7 @@ type Reporter struct {
 func New(c Config) (*Reporter, error) {
 	r := &Reporter{
 		interval: c.Interval, version: c.Version, hash: c.ConfigHash, instances: c.Instances,
-		log: c.Log, now: c.Now, client: c.Client, failing: map[string]bool{},
+		log: c.Log, now: c.Now, client: c.Client, failing: map[string]string{}, processID: newProcessID(),
 		rand: rand.New(rand.NewSource(seed())), postTimeout: defaultPostTimeout,
 	}
 	if r.version == "" {
@@ -270,12 +277,22 @@ func (r *Reporter) post(ctx context.Context, inst Instance, exit *wire.Exit) {
 		r.fail(inst.Name, "posting the bundle", err)
 		return
 	}
-	// Drained and closed whatever the status, or the connection is not
+	// A refusal's body is control's reason, such as a clock ten minutes
+	// off: logged, it is the one place an operator reads why. The rest is
+	// drained and closed whatever the status, or the connection is not
 	// reused and a process reporting for weeks leaks sockets.
+	var reason []byte
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		reason, _ = io.ReadAll(io.LimitReader(resp.Body, maxReason))
+	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		r.fail(inst.Name, "posting the bundle", fmt.Errorf("receiver answered %s", resp.Status))
+		err := fmt.Errorf("receiver answered %s", resp.Status)
+		if why := oneLine(reason); why != "" {
+			err = fmt.Errorf("receiver answered %s: %s", resp.Status, why)
+		}
+		r.fail(inst.Name, "posting the bundle", err)
 		return
 	}
 	r.succeed(inst.Name)
@@ -309,6 +326,7 @@ func (r *Reporter) bundle(inst Instance, d *wire.Database, exit *wire.Exit) wire
 		// RSS is the kernel's number, which the Go runtime cannot give;
 		// the contract reads an absent one as not measured, which is true.
 		Process: wire.Process{
+			ID:            r.processID,
 			StartedAt:     r.startedAt,
 			UptimeSeconds: &uptime,
 			Goroutines:    runtime.NumGoroutine(),
@@ -319,15 +337,16 @@ func (r *Reporter) bundle(inst Instance, d *wire.Database, exit *wire.Exit) wire
 	return b
 }
 
-// fail logs a failed post: one warning when a run of failures begins and
-// debug for the rest. An unregistered instance posts forever, and a line
-// per attempt would bury every other line in the log. The error is the
-// HTTP client's or the receiver's status; neither names a DSN.
+// fail logs a failed post: a warning when a run of failures begins or its
+// reason changes, and debug for the rest. An unregistered instance posts
+// forever, and a line per attempt would bury every other line in the log.
+// The error is the HTTP client's, or the receiver's status and reason;
+// none names a DSN.
 func (r *Reporter) fail(name, what string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.failing[name] {
-		r.failing[name] = true
+	if msg := what + ": " + err.Error(); r.failing[name] != msg {
+		r.failing[name] = msg
 		r.log.Warn("turbostats reporting is failing", zap.String("instance", name), zap.String("step", what),
 			zap.String("report_to", r.logURL), zap.Error(redact(err, r.url, r.logURL)))
 		return
@@ -340,10 +359,31 @@ func (r *Reporter) fail(name, what string, err error) {
 func (r *Reporter) succeed(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.failing[name] {
-		r.failing[name] = false
+	if r.failing[name] != "" {
+		r.failing[name] = ""
 		r.log.Info("turbostats reporting recovered", zap.String("instance", name), zap.String("report_to", r.logURL))
 	}
+}
+
+// maxReason bounds how much of a refusal's body is read and logged.
+// Control's reasons are one sentence or two.
+const maxReason = 512
+
+// oneLine is a refusal's body as one log line: whitespace runs, newlines
+// among them, become one space.
+func oneLine(b []byte) string {
+	return strings.Join(strings.Fields(string(b)), " ")
+}
+
+// newProcessID is 16 random bytes, hex-encoded, as wire.Process.ID says.
+func newProcessID() string {
+	b := make([]byte, 16)
+	if _, err := crand.Read(b); err != nil {
+		// Without one, control falls back to started_at: no worse than
+		// before the field.
+		return ""
+	}
+	return fmt.Sprintf("%x", b)
 }
 
 // redact replaces the full URL in an HTTP client's error with the one the
