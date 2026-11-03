@@ -71,6 +71,25 @@ func TestRates_AKindWithoutACounterSendsNoField(t *testing.T) {
 	assert.NotNil(t, l.TempBytesPerSecond)
 }
 
+// The write rate is the WAL position's rise. A replica has no position of
+// its own, so it sends no rate and its other rates stand.
+func TestRates_WALBytes(t *testing.T) {
+	prev, now := full(t0, 1), full(t0.Add(time.Minute), 1)
+	prev.WALBytes, now.WALBytes = 1<<30, 1<<30+6<<20
+	l := rates(prev, now)
+	assert.Equal(t, float64(6<<20)/60, *l.WALBytesPerSecond)
+
+	prev.WALBytes, now.WALBytes = -1, -1
+	l = rates(prev, now)
+	assert.Nil(t, l.WALBytesPerSecond)
+	assert.NotNil(t, l.TransactionsPerSecond)
+
+	// A position that falls is a restore or a failover to a replica behind
+	// the old primary. The difference means nothing, so no rate is sent.
+	prev.WALBytes, now.WALBytes = 1<<30, 1<<29
+	assert.Nil(t, rates(prev, now))
+}
+
 func TestRates_NoReadsNoRatio(t *testing.T) {
 	prev := full(t0, 1)
 	now := full(t0.Add(time.Minute), 1)

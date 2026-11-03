@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/zeebo/assert"
 
@@ -34,6 +35,7 @@ var (
 	readerDSN  string
 	scratchDSN string
 	newestAt   time.Time
+	container  *tcpostgres.PostgresContainer
 )
 
 func TestMain(m *testing.M) {
@@ -44,11 +46,17 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	pg, err := tcpostgres.Run(ctx, "postgres:18",
 		tcpostgres.WithDatabase("app"), tcpostgres.WithUsername("admin"), tcpostgres.WithPassword("admin"),
-		tcpostgres.BasicWaitStrategies())
+		tcpostgres.BasicWaitStrategies(),
+		// Logical slots need wal_level=logical. The slot limit holds one
+		// more slot than wire.MaxDatabaseReplicationSlots, and 5433 is the
+		// standby the replica tests start.
+		testcontainers.WithCmdArgs("-c", "wal_level=logical", "-c", "max_replication_slots=40", "-c", "max_wal_senders=40"),
+		testcontainers.WithExposedPorts(standbyPort+"/tcp"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "postgres container:", err)
 		os.Exit(1)
 	}
+	container = pg
 	adminDSN, err = pg.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -176,6 +184,8 @@ func TestResources_AllFields(t *testing.T) {
 	assert.NotNil(t, r.OldestTransactionSeconds)
 	assert.NotNil(t, r.Memory)
 	assert.That(t, r.Memory.SharedBuffersBytes > 0)
+	assert.NotNil(t, r.WALBytes)
+	assert.That(t, *r.WALBytes > 0)
 }
 
 // A database counts its tables in its own schemas, partitions included,
@@ -229,10 +239,15 @@ func TestResources_ReaderRoleIsToldWhatIsHidden(t *testing.T) {
 	assert.Nil(t, r.Connections)
 	assert.Nil(t, r.OldestTransactionSeconds)
 	assert.NotNil(t, r.SizeBytes)
-	assert.Equal(t, 1, len(errs))
+	// The role cannot list the WAL directory either. That hides one fact,
+	// and the error names the grant that brings it back.
+	assert.Nil(t, r.WALBytes)
+	assert.Equal(t, 2, len(errs))
 	assert.Equal(t, "", errs[0].Table)
 	assert.That(t, strings.Contains(errs[0].Error, "pg_stat_activity"))
 	assert.That(t, strings.Contains(errs[0].Error, "pg_read_all_stats"))
+	assert.That(t, strings.Contains(errs[1].Error, "pg_ls_waldir"))
+	assert.That(t, strings.Contains(errs[1].Error, "pg_monitor"))
 }
 
 func discover(t *testing.T, c *Client, d config.Discover) ([]config.StaticTable, int) {
@@ -391,7 +406,7 @@ func TestQueries_CountEveryRoundTrip(t *testing.T) {
 	c.Probe(context.Background(), time.Second)
 	assert.Equal(t, before+1, c.Queries())
 	c.Resources(context.Background())
-	assert.Equal(t, before+6, c.Queries())
+	assert.Equal(t, before+7, c.Queries())
 }
 
 // Findings from the review of #4.

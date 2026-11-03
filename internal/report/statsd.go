@@ -37,6 +37,10 @@ func (s *statsd) send(db string, d *wire.Database) {
 	}
 }
 
+// slotLost is the wal_status of a slot whose WAL the server removed. Its
+// consumer can no longer resume, and a stopped slot is otherwise only slow.
+const slotLost = "lost"
+
 // datagrams is the gauges for one section, packed into datagrams of at
 // most maxDatagram bytes, each a whole number of lines.
 func datagrams(db string, d *wire.Database) []string {
@@ -74,6 +78,9 @@ func datagrams(db string, d *wire.Database) []string {
 		}
 		if r.Memory != nil {
 			g("memory.shared_buffers_bytes", r.Memory.SharedBuffersBytes, base)
+		}
+		if r.WALBytes != nil {
+			g("wal_bytes", *r.WALBytes, base)
 		}
 	}
 	for _, t := range d.Tables {
@@ -118,6 +125,20 @@ func datagrams(db string, d *wire.Database) []string {
 		for _, rep := range r.Replicas {
 			if rep.LagSeconds != nil {
 				g("replication.replica.lag_seconds", *rep.LagSeconds, base+",replica:"+rep.Name)
+			}
+		}
+		for _, s := range r.Slots {
+			tags := base + ",slot:" + s.Name
+			g("replication.slot.active", boolInt(s.Active), tags)
+			g("replication.slot.lost", boolInt(s.WALStatus == slotLost), tags)
+			if s.RetainedBytes != nil {
+				g("replication.slot.retained_bytes", *s.RetainedBytes, tags)
+			}
+			if s.BehindBytes != nil {
+				g("replication.slot.behind_bytes", *s.BehindBytes, tags)
+			}
+			if s.SafeWALBytes != nil {
+				g("replication.slot.safe_wal_bytes", *s.SafeWALBytes, tags)
 			}
 		}
 	}
@@ -188,6 +209,7 @@ func loadFields(l *wire.DatabaseLoad) []loadField {
 	f("cache_hit_ratio", l.CacheHitRatio)
 	f("deadlocks_per_second", l.DeadlocksPerSecond)
 	f("temp_bytes_per_second", l.TempBytesPerSecond)
+	f("wal_bytes_per_second", l.WALBytesPerSecond)
 	return out
 }
 

@@ -1,6 +1,6 @@
 # dbhealth: one static binary in a minimal image. Build with
 #   docker build --build-arg VERSION=$(git describe --tags --always) .
-ARG GO_IMAGE=golang:1.26-bookworm
+ARG GO_IMAGE=golang:1.27.3-bookworm
 ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot
 
 FROM ${GO_IMAGE} AS builder

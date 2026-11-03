@@ -44,13 +44,14 @@ same names; StatsD the same with dots.
 | | metric | from |
 |---|---|---|
 | **serving?** | `dbhealth_probe_ok`, `dbhealth_probe_latency_ms`, `dbhealth_probe_consecutive_failures` | one `SELECT 1`, timed |
-| **how busy?** | `dbhealth_load_sessions_active_now` / `_waiting_now` / `_idle_in_transaction_now`, `dbhealth_load_longest_query_seconds`; `dbhealth_load_transactions_per_second`, `_rows_read_per_second`, `_rows_written_per_second`, `_cache_hit_ratio`, `_temp_bytes_per_second`, `_deadlocks_per_second` | `pg_stat_activity` now; `pg_stat_database` counters, two readings apart |
-| **near its limits?** | `dbhealth_connections_used` / `_max` / `_waiting`, `dbhealth_size_bytes`, `dbhealth_oldest_transaction_seconds`, `dbhealth_memory_shared_buffers_bytes` | `pg_stat_activity`, `pg_database_size` |
+| **how busy?** | `dbhealth_load_sessions_active_now` / `_waiting_now` / `_idle_in_transaction_now`, `dbhealth_load_longest_query_seconds`; `dbhealth_load_transactions_per_second`, `_rows_read_per_second`, `_rows_written_per_second`, `_cache_hit_ratio`, `_temp_bytes_per_second`, `_deadlocks_per_second`, `_wal_bytes_per_second` | `pg_stat_activity` now; `pg_stat_database` counters, two readings apart |
+| **near its limits?** | `dbhealth_connections_used` / `_max` / `_waiting`, `dbhealth_size_bytes`, `dbhealth_oldest_transaction_seconds`, `dbhealth_memory_shared_buffers_bytes`, `dbhealth_wal_bytes` | `pg_stat_activity`, `pg_database_size`, `pg_ls_waldir` |
 | **how many tables?** | `dbhealth_tables`, `dbhealth_partitions` — every table in the database's own schemas, and how many are partitions; a partition count that keeps climbing is retention that stopped | `pg_class` |
 | **tables current?** | `dbhealth_table_newest_at_seconds`, `dbhealth_table_rows`, `dbhealth_table_rows_exact`, `dbhealth_table_size_bytes`, `dbhealth_table_dead_rows`, `_seq_scans_per_second` / `_index_scans_per_second` — labelled `table` | `max(timestamp column)`, `n_live_tup` or `count(*)`, `pg_stat_user_tables` |
 | **tables written?** | `dbhealth_table_rows_inserted_per_second` / `_updated_` / `_deleted_` — the table's volume as its own counters say it, not an estimate | `pg_stat_user_tables`, two readings apart |
 | **schema changed?** | `dbhealth_table_schema_changes` — columns added, dropped, retyped or changed in nullability since the last report; control shows which, with the type before and after | `pg_attribute`, in the same read |
 | **replication** | `dbhealth_replication_lag_seconds`, per-replica lag | `pg_stat_replication` |
+| **replication slots** | `dbhealth_replication_slot_active`, `_lost`, `_retained_bytes`, `_behind_bytes`, `_safe_wal_bytes` — labelled `slot`, on a primary | `pg_replication_slots` |
 | **what it cost** | `dbhealth_collection_queries`, `_duration_ms`, `_errors` | counted |
 
 Every series carries `db`. A field the database could not give is absent,
@@ -60,9 +61,39 @@ interval's, from the database's own counters two readings apart; the
 first interval after a start or a stats reset sends none. Query text is
 never read.
 
-**What it costs the database:** one `SELECT 1`, seven catalog reads, and per
+**What it costs the database:** one `SELECT 1`, eleven catalog reads on a primary, nine on a replica, and per
 table one estimate and one `max()`, every interval. `count(*)` only where
 you ask, once an hour. `load: {enabled: false}` drops two of the reads.
+
+## Replication slots and WAL
+
+A CDC connector that stops, such as Debezium, leaves `pg_stat_replication`.
+Its replication slot stays and holds WAL until the disk fills.
+`dbhealth_replication_slot_active` falls to 0, and
+`dbhealth_replication_slot_retained_bytes` and `dbhealth_wal_bytes` keep
+climbing.
+
+- **`_retained_bytes`** is the WAL the slot keeps on disk.
+- **`_behind_bytes`** is the WAL its consumer has not confirmed. A logical
+  slot has it; a physical slot does not.
+- **`_safe_wal_bytes`** is the WAL the server can write before the slot is at
+  risk. It is absent unless the server sets `max_slot_wal_keep_size`.
+- **`_lost`** is 1 once the server has removed WAL the slot needs. Its
+  consumer cannot resume.
+
+A slot is the server's, not the database's, so each database on a server
+reports all of its slots. A report carries at most 32, the ones holding the
+most WAL first. Slots need Postgres 13 or later.
+
+`dbhealth_wal_bytes` needs `pg_monitor`. Without it, the field is absent and
+the report's errors name the grant:
+
+```sql
+GRANT pg_monitor TO dbhealth;
+```
+
+dbhealth cannot see free disk, because Postgres does not report it through
+SQL. Read it from your host or your cloud's metrics.
 
 ## Config
 

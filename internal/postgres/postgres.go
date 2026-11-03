@@ -203,6 +203,18 @@ func (c *Client) Resources(ctx context.Context) (*wire.DatabaseResources, []wire
 	} else {
 		r.Memory = &wire.DatabaseMemory{SharedBuffersBytes: shared}
 	}
+
+	var wal int64
+	err = c.row(ctx, `SELECT COALESCE(sum(size), 0)::bigint FROM pg_ls_waldir()`, nil, &wal)
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.As(err, &pgErr) && pgErr.Code == insufficientPrivilege:
+		errs = append(errs, wire.DatabaseError{Error: "pg_ls_waldir: " + sqlError(err) + "; grant pg_monitor"})
+	case err != nil:
+		fail("pg_ls_waldir", err)
+	default:
+		r.WALBytes = &wal
+	}
 	return &r, errs
 }
 
@@ -380,9 +392,14 @@ func splitName(name string) (string, string) {
 	return "public", name
 }
 
+// insufficientPrivilege is the SQLSTATE of a query the role may not run.
+const insufficientPrivilege = "42501"
+
 // Replication is this endpoint's view of its replication. A replica
-// reports how far behind it is; a primary reports each replica it streams
-// to. A primary with none has nothing to say, and returns nil.
+// reports how far behind it is. A primary reports each replica it streams
+// to and each replication slot. A primary with neither has nothing to say,
+// and returns nil. Replicas and slots are separate reads: a failure of one
+// comes back as the error, beside what the other read.
 func (c *Client) Replication(ctx context.Context) (*wire.DatabaseReplication, error) {
 	var inRecovery bool
 	var lag *float64
@@ -401,6 +418,19 @@ func (c *Client) Replication(ctx context.Context) (*wire.DatabaseReplication, er
 		}
 		return r, nil
 	}
+	replicas, replicasErr := c.replicas(ctx)
+	slots, slotsErr := c.slots(ctx)
+	err = errors.Join(replicasErr, slotsErr)
+	if len(replicas) == 0 && len(slots) == 0 {
+		return nil, err
+	}
+	return &wire.DatabaseReplication{Role: "primary", Replicas: replicas, Slots: slots}, err
+}
+
+// replicas reads pg_stat_replication, the consumers streaming now. A
+// consumer that stops leaves this view at once. Its slot does not leave
+// pg_replication_slots, which is why both are read.
+func (c *Client) replicas(ctx context.Context) ([]wire.DatabaseReplica, error) {
 	c.queries.Add(1)
 	qctx, cancel := c.bounded(ctx)
 	defer cancel()
@@ -421,13 +451,44 @@ func (c *Client) Replication(ctx context.Context) (*wire.DatabaseReplication, er
 	if err := rows.Err(); err != nil {
 		return nil, errors.New("pg_stat_replication: " + sqlError(err))
 	}
-	if len(replicas) == 0 {
-		return nil, nil
-	}
 	if len(replicas) > wire.MaxDatabaseReplicas {
 		replicas = replicas[:wire.MaxDatabaseReplicas]
 	}
-	return &wire.DatabaseReplication{Role: "primary", Replicas: replicas}, nil
+	return replicas, nil
+}
+
+// slots reads every replication slot on the server, the ones holding the
+// most WAL first. wal_status arrived in Postgres 13, so an older server
+// gets an error here and keeps its replicas.
+func (c *Client) slots(ctx context.Context) ([]wire.DatabaseReplicationSlot, error) {
+	c.queries.Add(1)
+	qctx, cancel := c.bounded(ctx)
+	defer cancel()
+	rows, err := c.pool.Query(qctx, `SELECT slot_name::text, slot_type, COALESCE(plugin::text, ''),
+		COALESCE(database::text, ''), active, COALESCE(wal_status, ''),
+		pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint AS retained,
+		pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)::bigint,
+		safe_wal_size
+		FROM pg_replication_slots
+		ORDER BY retained DESC NULLS LAST, slot_name
+		LIMIT $1`, wire.MaxDatabaseReplicationSlots)
+	if err != nil {
+		return nil, errors.New("pg_replication_slots: " + sqlError(err))
+	}
+	defer rows.Close()
+	var slots []wire.DatabaseReplicationSlot
+	for rows.Next() {
+		var s wire.DatabaseReplicationSlot
+		if err := rows.Scan(&s.Name, &s.Type, &s.Plugin, &s.Database, &s.Active, &s.WALStatus,
+			&s.RetainedBytes, &s.BehindBytes, &s.SafeWALBytes); err != nil {
+			return nil, errors.New("pg_replication_slots: " + sqlError(err))
+		}
+		slots = append(slots, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.New("pg_replication_slots: " + sqlError(err))
+	}
+	return slots, nil
 }
 
 // scanReplica reads one pg_stat_replication row. A role without

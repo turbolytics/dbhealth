@@ -38,7 +38,8 @@ docker exec "$PG" psql -U rt -d rt -q \
   -c "CREATE TABLE public.events (id serial PRIMARY KEY, created_at timestamptz NOT NULL DEFAULT now())" \
   -c "INSERT INTO public.events SELECT FROM generate_series(1, 250)" \
   -c "SELECT pg_stat_force_next_flush()" \
-  -c "VACUUM ANALYZE public.events" >/dev/null
+  -c "VACUUM ANALYZE public.events" \
+  -c "SELECT pg_create_physical_replication_slot('release_slot', true)" >/dev/null
 
 # StatsD: a listener on the same network that prints every datagram, so
 # the test reads its logs. A container, not the host: on Docker Desktop
@@ -114,6 +115,10 @@ grep -q 'dbhealth_probe_ok{db="release-test"} 1' "$WORK/metrics.txt" && echo "ok
 grep -q 'dbhealth_table_rows{db="release-test",table="public.events"} 250' "$WORK/metrics.txt" && echo "ok   /metrics table_rows" || { echo "MISSING /metrics dbhealth_table_rows"; fail=1; }
 grep -q 'dbhealth_load_sessions_active_now{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics load sample" || { echo "MISSING /metrics dbhealth_load_sessions_active_now"; fail=1; }
 grep -q 'dbhealth_load_transactions_per_second{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics load rate" || { echo "MISSING /metrics dbhealth_load_transactions_per_second (needs two intervals)"; fail=1; }
+grep -q 'dbhealth_wal_bytes{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics wal_bytes" || { echo "MISSING /metrics dbhealth_wal_bytes"; fail=1; }
+grep -q 'dbhealth_load_wal_bytes_per_second{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics wal rate" || { echo "MISSING /metrics dbhealth_load_wal_bytes_per_second (needs two intervals)"; fail=1; }
+grep -q 'dbhealth_replication_slot_active{db="release-test",slot="release_slot"} 0' "$WORK/metrics.txt" && echo "ok   /metrics slot with no consumer" || { echo "MISSING /metrics dbhealth_replication_slot_active"; fail=1; }
+grep -q 'dbhealth_replication_slot_retained_bytes{db="release-test",slot="release_slot"}' "$WORK/metrics.txt" && echo "ok   /metrics slot retained bytes" || { echo "MISSING /metrics dbhealth_replication_slot_retained_bytes"; fail=1; }
 grep -q "dbhealth started" "$WORK/run.log" || { echo "MISSING started log line"; fail=1; }
 grep -q "dbhealth stopped" "$WORK/run.log" || { echo "MISSING clean stop on SIGTERM"; fail=1; }
 if grep -q "$PASS" "$WORK/run.log" "$WORK/statsd.txt" "$WORK/metrics.txt"; then echo "LEAK: the password is in the output"; fail=1; fi
