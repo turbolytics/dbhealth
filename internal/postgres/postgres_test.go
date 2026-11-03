@@ -6,11 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/zeebo/assert"
@@ -22,7 +24,8 @@ import (
 // The collector asks a Client these questions.
 var _ collector.Source = (*Client)(nil)
 
-// One postgres:18 for the package, with the schema the tests read:
+// One Postgres for the package, POSTGRES_VERSION or else 18, with the schema
+// the tests read:
 //
 //	public.events(id, created_at)  1,000 rows
 //	public.blobs(id, data)         no timestamp column
@@ -36,6 +39,7 @@ var (
 	scratchDSN string
 	newestAt   time.Time
 	container  *tcpostgres.PostgresContainer
+	version    = "18"
 )
 
 func TestMain(m *testing.M) {
@@ -44,7 +48,10 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 	ctx := context.Background()
-	pg, err := tcpostgres.Run(ctx, "postgres:18",
+	if v := os.Getenv("POSTGRES_VERSION"); v != "" {
+		version = v
+	}
+	pg, err := tcpostgres.Run(ctx, "postgres:"+version,
 		tcpostgres.WithDatabase("app"), tcpostgres.WithUsername("admin"), tcpostgres.WithPassword("admin"),
 		tcpostgres.BasicWaitStrategies(),
 		// Logical slots need wal_level=logical. The slot limit holds one
@@ -75,6 +82,27 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// settle marks the steps in seed that call settleStats.
+const settle = "settle"
+
+// settleStats makes this connection's work visible in the stats views. A
+// test cannot wait on a view that may already be right, so it waits for the
+// server to have had the chance. Postgres 15 flushes on request. Older
+// servers send counts through a collector at the end of a transaction, at
+// most every half second, and readers see the collector's last file.
+func settleStats(ctx context.Context, conn interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}) error {
+	if major, _ := strconv.Atoi(version); major >= 15 {
+		_, err := conn.Exec(ctx, `SELECT pg_stat_force_next_flush()`)
+		return err
+	}
+	time.Sleep(600 * time.Millisecond)
+	_, err := conn.Exec(ctx, `SELECT 1`)
+	time.Sleep(600 * time.Millisecond)
+	return err
+}
+
 func seed(ctx context.Context) error {
 	conn, err := pgx.Connect(ctx, adminDSN)
 	if err != nil {
@@ -97,14 +125,21 @@ func seed(ctx context.Context) error {
 		`INSERT INTO parts.reports SELECT g, '2026-10-04T00:00:00Z'::timestamptz + (g * 864 || ' seconds')::interval FROM generate_series(0, 199) g`,
 		// The insert's counts are pending in this backend until a flush;
 		// vacuum then counts the heap itself, so the two must not add up.
-		`SELECT pg_stat_force_next_flush()`,
+		settle,
 		`VACUUM ANALYZE`,
 		`CREATE DATABASE scratch`,
 		`CREATE ROLE reader LOGIN PASSWORD 'reader'`,
 		`GRANT CONNECT ON DATABASE app TO reader`,
 		`GRANT USAGE ON SCHEMA public, audit TO reader`,
 		`GRANT SELECT ON ALL TABLES IN SCHEMA public, audit TO reader`,
+		settle,
 	} {
+		if q == settle {
+			if err := settleStats(ctx, conn); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err := conn.Exec(ctx, q); err != nil {
 			return fmt.Errorf("%s: %w", q, err)
 		}
@@ -169,7 +204,7 @@ func TestVersion(t *testing.T) {
 	c := open(t, adminDSN)
 	v, err := c.Version(context.Background())
 	assert.NoError(t, err)
-	assert.That(t, strings.HasPrefix(v, "18"))
+	assert.That(t, strings.HasPrefix(v, version))
 }
 
 func TestResources_AllFields(t *testing.T) {

@@ -40,11 +40,12 @@ func slot(t *testing.T, create string) {
 
 // writeWAL writes n bytes of WAL, with no table involved. That is what a
 // slot sees on a low-activity database: WAL from elsewhere on the server.
-// It flushes, because pg_current_wal_lsn() is the write position, and an
-// unflushed record stays in the WAL buffers until the WAL writer's next pass.
+// The message is transactional, so its commit flushes it on every version:
+// pg_current_wal_lsn() is the write position, and an unflushed record stays
+// in the WAL buffers until the WAL writer's next pass.
 func writeWAL(t *testing.T, n int) {
 	t.Helper()
-	admin(t, `SELECT pg_logical_emit_message(false, 'dbhealth', repeat('x', $1::int), true)`, n)
+	admin(t, `SELECT pg_logical_emit_message(true, 'dbhealth', repeat('x', $1::int))`, n)
 }
 
 func replication(t *testing.T, dsn string) *wire.DatabaseReplication {

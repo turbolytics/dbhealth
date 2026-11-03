@@ -3,7 +3,7 @@
 #
 #   fmt          gofmt, go vet
 #   unit         go test -short: no Docker, every package inside 10 seconds
-#   integration  one job per database kind, against a real one in testcontainers
+#   integration  one job per database kind and version, against a real one in testcontainers
 #   release      the image, built and run against a real Postgres
 name: ci
 
@@ -52,16 +52,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # One entry per database kind, each the package under internal/
-        # whose tests start that database in testcontainers. A new kind
-        # adds its line here.
-        kind: [postgres]
+        # Each kind is the package under internal/ whose tests start that
+        # database in testcontainers. Each version is one the README claims,
+        # because the catalogs differ: wal_status arrived in 13, and
+        # pg_stat_force_next_flush in 15. A new kind adds its lines here.
+        include:
+          - {kind: postgres, version: "13"}
+          - {kind: postgres, version: "14"}
+          - {kind: postgres, version: "15"}
+          - {kind: postgres, version: "16"}
+          - {kind: postgres, version: "17"}
+          - {kind: postgres, version: "18"}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.3'
-      - run: make test-integration KIND=${{ matrix.kind }}
+      - run: make test-integration KIND=${{ matrix.kind }} POSTGRES_VERSION=${{ matrix.version }}
 
   release:
     runs-on: ubuntu-latest

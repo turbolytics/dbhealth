@@ -17,10 +17,11 @@ test-short:
 	go test -short -timeout 10s ./...
 
 # One database kind's tests against a real one in testcontainers. KIND is
-# the package under internal/: postgres today.
+# the package under internal/: postgres today. POSTGRES_VERSION picks the
+# image's major version; the tests default to 18.
 KIND ?= postgres
 test-integration:
-	go test -race -count=1 ./internal/$(KIND)/
+	POSTGRES_VERSION=$(POSTGRES_VERSION) go test -race -count=1 ./internal/$(KIND)/
 
 # Against a real Postgres and a local control; see test/e2e/e2e_test.go
 # for the DBHEALTH_E2E_* variables it needs.

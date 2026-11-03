@@ -84,7 +84,8 @@ climbing.
 
 A slot is the server's, not the database's, so each database on a server
 reports all of its slots. A report carries at most 32, the ones holding the
-most WAL first. Slots need Postgres 13 or later.
+most WAL first. Slots need Postgres 13 or later, and CI runs every integration
+test against Postgres 13 through 18.
 
 `dbhealth_wal_bytes` needs `pg_monitor`. Without it, the field is absent and
 the report's errors name the grant:
@@ -189,5 +190,6 @@ The connection string never leaves the process. What is sent is
 make build && ./bin/dbhealth version
 make test-short            # unit, no Docker
 make test-integration      # against postgres:18 in testcontainers
+make test-integration POSTGRES_VERSION=13  # against another version
 make release-test          # the image, run against Postgres
 ```
