@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/turbolytics/sql-flow/turbostats/wire"
 )
@@ -37,10 +38,6 @@ func (s *statsd) send(db string, d *wire.Database) {
 	}
 }
 
-// slotLost is the wal_status of a slot whose WAL the server removed. Its
-// consumer can no longer resume, and a stopped slot is otherwise only slow.
-const slotLost = "lost"
-
 // datagrams is the gauges for one section, packed into datagrams of at
 // most maxDatagram bytes, each a whole number of lines.
 func datagrams(db string, d *wire.Database) []string {
@@ -55,96 +52,19 @@ func datagrams(db string, d *wire.Database) []string {
 		}
 		b.WriteString(line)
 	}
-	g("probe.ok", boolInt(d.Probe.OK), base)
-	g("probe.latency_ms", d.Probe.LatencyMs, base)
-	g("probe.consecutive_failures", d.Probe.ConsecutiveFailures, base)
-	if r := d.Resources; r != nil {
-		if c := r.Connections; c != nil {
-			g("connections.used", c.Used, base)
-			g("connections.max", c.Max, base)
-			g("connections.waiting", c.Waiting, base)
+	for i := range catalog {
+		f := &catalog[i]
+		if f.StatsD == "" {
+			continue
 		}
-		if r.SizeBytes != nil {
-			g("size_bytes", *r.SizeBytes, base)
-		}
-		if r.TableCount != nil {
-			g("tables", *r.TableCount, base)
-		}
-		if r.PartitionCount != nil {
-			g("partitions", *r.PartitionCount, base)
-		}
-		if r.OldestTransactionSeconds != nil {
-			g("oldest_transaction_seconds", *r.OldestTransactionSeconds, base)
-		}
-		if r.Memory != nil {
-			g("memory.shared_buffers_bytes", r.Memory.SharedBuffersBytes, base)
-		}
-		if r.WALBytes != nil {
-			g("wal_bytes", *r.WALBytes, base)
+		for _, sm := range f.samples(d, time.Time{}) {
+			tags := base
+			if f.label != "" {
+				tags += "," + f.label + ":" + sm.label
+			}
+			g(f.StatsD, sm.value, tags)
 		}
 	}
-	for _, t := range d.Tables {
-		tags := base + ",table:" + t.Name
-		if t.Rows != nil {
-			g("table.rows", *t.Rows, tags)
-			g("table.rows_exact", boolInt(t.RowsExact), tags)
-		}
-		g("table.size_bytes", t.SizeBytes, tags)
-		if t.NewestAt != nil {
-			g("table.newest_at", t.NewestAt.Unix(), tags)
-		}
-		if t.DeadRows != nil {
-			g("table.dead_rows", *t.DeadRows, tags)
-		}
-		if t.SeqScansPerSecond != nil {
-			g("table.seq_scans_per_second", *t.SeqScansPerSecond, tags)
-		}
-		if t.IndexScansPerSecond != nil {
-			g("table.index_scans_per_second", *t.IndexScansPerSecond, tags)
-		}
-		if t.RowsInsertedPerSecond != nil {
-			g("table.rows_inserted_per_second", *t.RowsInsertedPerSecond, tags)
-		}
-		if t.RowsUpdatedPerSecond != nil {
-			g("table.rows_updated_per_second", *t.RowsUpdatedPerSecond, tags)
-		}
-		if t.RowsDeletedPerSecond != nil {
-			g("table.rows_deleted_per_second", *t.RowsDeletedPerSecond, tags)
-		}
-		g("table.schema_changes", int64(len(t.SchemaChanges)), tags)
-	}
-	if l := d.Load; l != nil {
-		for _, f := range loadFields(l) {
-			g("load."+f.name, f.value, base)
-		}
-	}
-	if r := d.Replication; r != nil {
-		if r.LagSeconds != nil {
-			g("replication.lag_seconds", *r.LagSeconds, base)
-		}
-		for _, rep := range r.Replicas {
-			if rep.LagSeconds != nil {
-				g("replication.replica.lag_seconds", *rep.LagSeconds, base+",replica:"+rep.Name)
-			}
-		}
-		for _, s := range r.Slots {
-			tags := base + ",slot:" + s.Name
-			g("replication.slot.active", boolInt(s.Active), tags)
-			g("replication.slot.lost", boolInt(s.WALStatus == slotLost), tags)
-			if s.RetainedBytes != nil {
-				g("replication.slot.retained_bytes", *s.RetainedBytes, tags)
-			}
-			if s.BehindBytes != nil {
-				g("replication.slot.behind_bytes", *s.BehindBytes, tags)
-			}
-			if s.SafeWALBytes != nil {
-				g("replication.slot.safe_wal_bytes", *s.SafeWALBytes, tags)
-			}
-		}
-	}
-	g("collection.queries", d.Collection.Queries, base)
-	g("collection.duration_ms", d.Collection.DurationMs, base)
-	g("collection.errors", len(d.Collection.Errors), base)
 	if b.Len() > 0 {
 		out = append(out, b.String())
 	}
@@ -166,56 +86,6 @@ func gauge(v any) string {
 			n = 0
 		}
 		return strconv.FormatInt(n, 10)
-	case int:
-		if n < 0 {
-			n = 0
-		}
-		return strconv.Itoa(n)
 	}
 	return fmt.Sprint(v)
-}
-
-// loadField is one load gauge: the spec's name and its value, when set.
-type loadField struct {
-	name  string
-	value any
-}
-
-// loadFields is every load field that is present, in the spec's order,
-// for the StatsD and OpenTelemetry writers alike.
-func loadFields(l *wire.DatabaseLoad) []loadField {
-	var out []loadField
-	i := func(name string, v *int) {
-		if v != nil {
-			out = append(out, loadField{name, *v})
-		}
-	}
-	f := func(name string, v *float64) {
-		if v != nil {
-			out = append(out, loadField{name, *v})
-		}
-	}
-	i("sessions_active_now", l.SessionsActiveNow)
-	i("sessions_idle_in_transaction_now", l.SessionsIdleInTransactionNow)
-	i("sessions_waiting_now", l.SessionsWaitingNow)
-	i("queries_queued_now", l.QueriesQueuedNow)
-	f("longest_query_seconds", l.LongestQuerySeconds)
-	f("queries_per_second", l.QueriesPerSecond)
-	f("transactions_per_second", l.TransactionsPerSecond)
-	f("rollbacks_per_second", l.RollbacksPerSecond)
-	f("rows_read_per_second", l.RowsReadPerSecond)
-	f("rows_written_per_second", l.RowsWrittenPerSecond)
-	f("bytes_scanned_per_second", l.BytesScannedPerSecond)
-	f("cache_hit_ratio", l.CacheHitRatio)
-	f("deadlocks_per_second", l.DeadlocksPerSecond)
-	f("temp_bytes_per_second", l.TempBytesPerSecond)
-	f("wal_bytes_per_second", l.WALBytesPerSecond)
-	return out
-}
-
-func boolInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
 }
