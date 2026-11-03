@@ -1,0 +1,229 @@
+# HELP dbhealth_collection_duration_ms what the last interval cost
+# HELP dbhealth_collection_errors queries that failed in the last interval
+# HELP dbhealth_collection_queries queries the last interval ran
+# HELP dbhealth_connections_max max_connections
+# HELP dbhealth_connections_used connections in use
+# HELP dbhealth_connections_waiting connections waiting on a lock
+# HELP dbhealth_last_collect_timestamp_seconds when the last collection ran, Unix seconds
+# HELP dbhealth_load_bytes_scanned_per_second storage read to answer queries
+# HELP dbhealth_load_cache_hit_ratio the interval's reads served from memory, 0..1
+# HELP dbhealth_load_deadlocks_per_second the interval's deadlocks
+# HELP dbhealth_load_longest_query_seconds age of the oldest statement still running
+# HELP dbhealth_load_queries_per_second the interval's queries
+# HELP dbhealth_load_queries_queued_now queries waiting to start
+# HELP dbhealth_load_rollbacks_per_second the interval's rollbacks
+# HELP dbhealth_load_rows_read_per_second rows returned to clients
+# HELP dbhealth_load_rows_written_per_second rows inserted, updated and deleted
+# HELP dbhealth_load_sessions_active_now sessions executing a statement
+# HELP dbhealth_load_sessions_idle_in_transaction_now sessions idle inside an open transaction
+# HELP dbhealth_load_sessions_waiting_now sessions blocked on a lock, a queue or a resource
+# HELP dbhealth_load_temp_bytes_per_second sorts and hashes spilling to disk
+# HELP dbhealth_load_transactions_per_second the interval's commits
+# HELP dbhealth_load_wal_bytes_per_second the write-ahead log the server wrote
+# HELP dbhealth_memory_shared_buffers_bytes shared_buffers
+# HELP dbhealth_oldest_transaction_seconds age of the oldest open transaction
+# HELP dbhealth_partitions tables that are partitions
+# HELP dbhealth_probe_consecutive_failures probes failed in a row
+# HELP dbhealth_probe_latency_ms the last probe's round trip
+# HELP dbhealth_probe_ok 1 when the last probe answered
+# HELP dbhealth_replication_lag_seconds how far behind this endpoint is
+# HELP dbhealth_replication_replica_lag_seconds a replica's lag as its primary sees it
+# HELP dbhealth_replication_slot_active 1 when a consumer is connected to the slot
+# HELP dbhealth_replication_slot_behind_bytes WAL the slot's consumer has not confirmed
+# HELP dbhealth_replication_slot_lost 1 when the server removed WAL the slot needs
+# HELP dbhealth_replication_slot_retained_bytes WAL the slot keeps on disk
+# HELP dbhealth_replication_slot_safe_wal_bytes WAL the server can write before the slot is at risk
+# HELP dbhealth_size_bytes the database on disk, WAL not included
+# HELP dbhealth_table_dead_rows rows deleted or updated and not yet reclaimed
+# HELP dbhealth_table_index_scans_per_second index reads
+# HELP dbhealth_table_newest_at_seconds max of the freshness column, Unix seconds
+# HELP dbhealth_table_rows rows, estimated unless dbhealth_table_rows_exact is 1
+# HELP dbhealth_table_rows_deleted_per_second rows deleted, from the table's own counter
+# HELP dbhealth_table_rows_exact 1 when dbhealth_table_rows is a count(*)
+# HELP dbhealth_table_rows_inserted_per_second rows inserted, from the table's own counter
+# HELP dbhealth_table_rows_updated_per_second rows updated, from the table's own counter
+# HELP dbhealth_table_schema_changes columns added, dropped or retyped since the last report
+# HELP dbhealth_table_seq_scans_per_second whole-table reads
+# HELP dbhealth_table_size_bytes the table on disk
+# HELP dbhealth_tables tables in the database's own schemas, partitions included
+# HELP dbhealth_wal_bytes the write-ahead log on disk, for the whole server
+# TYPE dbhealth_collection_duration_ms gauge
+# TYPE dbhealth_collection_errors gauge
+# TYPE dbhealth_collection_queries gauge
+# TYPE dbhealth_connections_max gauge
+# TYPE dbhealth_connections_used gauge
+# TYPE dbhealth_connections_waiting gauge
+# TYPE dbhealth_last_collect_timestamp_seconds gauge
+# TYPE dbhealth_load_bytes_scanned_per_second gauge
+# TYPE dbhealth_load_cache_hit_ratio gauge
+# TYPE dbhealth_load_deadlocks_per_second gauge
+# TYPE dbhealth_load_longest_query_seconds gauge
+# TYPE dbhealth_load_queries_per_second gauge
+# TYPE dbhealth_load_queries_queued_now gauge
+# TYPE dbhealth_load_rollbacks_per_second gauge
+# TYPE dbhealth_load_rows_read_per_second gauge
+# TYPE dbhealth_load_rows_written_per_second gauge
+# TYPE dbhealth_load_sessions_active_now gauge
+# TYPE dbhealth_load_sessions_idle_in_transaction_now gauge
+# TYPE dbhealth_load_sessions_waiting_now gauge
+# TYPE dbhealth_load_temp_bytes_per_second gauge
+# TYPE dbhealth_load_transactions_per_second gauge
+# TYPE dbhealth_load_wal_bytes_per_second gauge
+# TYPE dbhealth_memory_shared_buffers_bytes gauge
+# TYPE dbhealth_oldest_transaction_seconds gauge
+# TYPE dbhealth_partitions gauge
+# TYPE dbhealth_probe_consecutive_failures gauge
+# TYPE dbhealth_probe_latency_ms gauge
+# TYPE dbhealth_probe_ok gauge
+# TYPE dbhealth_replication_lag_seconds gauge
+# TYPE dbhealth_replication_replica_lag_seconds gauge
+# TYPE dbhealth_replication_slot_active gauge
+# TYPE dbhealth_replication_slot_behind_bytes gauge
+# TYPE dbhealth_replication_slot_lost gauge
+# TYPE dbhealth_replication_slot_retained_bytes gauge
+# TYPE dbhealth_replication_slot_safe_wal_bytes gauge
+# TYPE dbhealth_size_bytes gauge
+# TYPE dbhealth_table_dead_rows gauge
+# TYPE dbhealth_table_index_scans_per_second gauge
+# TYPE dbhealth_table_newest_at_seconds gauge
+# TYPE dbhealth_table_rows gauge
+# TYPE dbhealth_table_rows_deleted_per_second gauge
+# TYPE dbhealth_table_rows_exact gauge
+# TYPE dbhealth_table_rows_inserted_per_second gauge
+# TYPE dbhealth_table_rows_updated_per_second gauge
+# TYPE dbhealth_table_schema_changes gauge
+# TYPE dbhealth_table_seq_scans_per_second gauge
+# TYPE dbhealth_table_size_bytes gauge
+# TYPE dbhealth_tables gauge
+# TYPE dbhealth_wal_bytes gauge
+dbhealth.collection.duration_ms:123354|g|#db:db
+dbhealth.collection.errors:2|g|#db:db
+dbhealth.collection.queries:69959|g|#db:db
+dbhealth.connections.max:808081|g|#db:db
+dbhealth.connections.used:767656|g|#db:db
+dbhealth.connections.waiting:439488|g|#db:db
+dbhealth.load.bytes_scanned_per_second:142512.5|g|#db:db
+dbhealth.load.cache_hit_ratio:879887.5|g|#db:db
+dbhealth.load.deadlocks_per_second:890282.5|g|#db:db
+dbhealth.load.longest_query_seconds:299648.5|g|#db:db
+dbhealth.load.queries_per_second:431804.5|g|#db:db
+dbhealth.load.queries_queued_now:804234|g|#db:db
+dbhealth.load.rollbacks_per_second:894911.5|g|#db:db
+dbhealth.load.rows_read_per_second:968422.5|g|#db:db
+dbhealth.load.rows_written_per_second:832741.5|g|#db:db
+dbhealth.load.sessions_active_now:935120|g|#db:db
+dbhealth.load.sessions_idle_in_transaction_now:931835|g|#db:db
+dbhealth.load.sessions_waiting_now:481999|g|#db:db
+dbhealth.load.temp_bytes_per_second:66796.5|g|#db:db
+dbhealth.load.transactions_per_second:269485.5|g|#db:db
+dbhealth.load.wal_bytes_per_second:830856.5|g|#db:db
+dbhealth.memory.shared_buffers_bytes:760374|g|#db:db
+dbhealth.oldest_transaction_seconds:145426|g|#db:db
+dbhealth.partitions:357866|g|#db:db
+dbhealth.probe.consecutive_failures:910293|g|#db:db
+dbhealth.probe.latency_ms:795966|g|#db:db
+dbhealth.probe.ok:0|g|#db:db
+dbhealth.replication.lag_seconds:69869.5|g|#db:db
+dbhealth.replication.replica.lag_seconds:503783.5|g|#db:db,replica:s617800
+dbhealth.replication.replica.lag_seconds:609918.5|g|#db:db,replica:s556703
+dbhealth.replication.slot.active:0|g|#db:db,slot:s818182
+dbhealth.replication.slot.active:1|g|#db:db,slot:s932397
+dbhealth.replication.slot.behind_bytes:473194|g|#db:db,slot:s932397
+dbhealth.replication.slot.behind_bytes:685897|g|#db:db,slot:s818182
+dbhealth.replication.slot.lost:0|g|#db:db,slot:s932397
+dbhealth.replication.slot.lost:1|g|#db:db,slot:s818182
+dbhealth.replication.slot.retained_bytes:614181|g|#db:db,slot:s818182
+dbhealth.replication.slot.retained_bytes:680330|g|#db:db,slot:s932397
+dbhealth.replication.slot.safe_wal_bytes:136791|g|#db:db,slot:s818182
+dbhealth.replication.slot.safe_wal_bytes:781120|g|#db:db,slot:s932397
+dbhealth.size_bytes:602889|g|#db:db
+dbhealth.table.dead_rows:258514|g|#db:db,table:s781935
+dbhealth.table.dead_rows:705387|g|#db:db,table:s602008
+dbhealth.table.index_scans_per_second:178390.5|g|#db:db,table:s781935
+dbhealth.table.index_scans_per_second:73293.5|g|#db:db,table:s602008
+dbhealth.table.newest_at:1767505250|g|#db:db,table:s781935
+dbhealth.table.newest_at:1768187435|g|#db:db,table:s602008
+dbhealth.table.rows:846918|g|#db:db,table:s602008
+dbhealth.table.rows:926049|g|#db:db,table:s781935
+dbhealth.table.rows_deleted_per_second:585741.5|g|#db:db,table:s602008
+dbhealth.table.rows_deleted_per_second:78096.5|g|#db:db,table:s781935
+dbhealth.table.rows_exact:0|g|#db:db,table:s781935
+dbhealth.table.rows_exact:1|g|#db:db,table:s602008
+dbhealth.table.rows_inserted_per_second:179451.5|g|#db:db,table:s781935
+dbhealth.table.rows_inserted_per_second:576776.5|g|#db:db,table:s602008
+dbhealth.table.rows_updated_per_second:201706.5|g|#db:db,table:s781935
+dbhealth.table.rows_updated_per_second:478211.5|g|#db:db,table:s602008
+dbhealth.table.schema_changes:2|g|#db:db,table:s602008
+dbhealth.table.schema_changes:2|g|#db:db,table:s781935
+dbhealth.table.seq_scans_per_second:237059.5|g|#db:db,table:s781935
+dbhealth.table.seq_scans_per_second:375300.5|g|#db:db,table:s602008
+dbhealth.table.size_bytes:711877|g|#db:db,table:s781935
+dbhealth.table.size_bytes:846154|g|#db:db,table:s602008
+dbhealth.tables:247144|g|#db:db
+dbhealth.wal_bytes:31676|g|#db:db
+dbhealth_collection_duration_ms{db="db"} 123354
+dbhealth_collection_errors{db="db"} 2
+dbhealth_collection_queries{db="db"} 69959
+dbhealth_connections_max{db="db"} 808081
+dbhealth_connections_used{db="db"} 767656
+dbhealth_connections_waiting{db="db"} 439488
+dbhealth_last_collect_timestamp_seconds{db="db"} 1.791201605e+09
+dbhealth_load_bytes_scanned_per_second{db="db"} 142512.5
+dbhealth_load_cache_hit_ratio{db="db"} 879887.5
+dbhealth_load_deadlocks_per_second{db="db"} 890282.5
+dbhealth_load_longest_query_seconds{db="db"} 299648.5
+dbhealth_load_queries_per_second{db="db"} 431804.5
+dbhealth_load_queries_queued_now{db="db"} 804234
+dbhealth_load_rollbacks_per_second{db="db"} 894911.5
+dbhealth_load_rows_read_per_second{db="db"} 968422.5
+dbhealth_load_rows_written_per_second{db="db"} 832741.5
+dbhealth_load_sessions_active_now{db="db"} 935120
+dbhealth_load_sessions_idle_in_transaction_now{db="db"} 931835
+dbhealth_load_sessions_waiting_now{db="db"} 481999
+dbhealth_load_temp_bytes_per_second{db="db"} 66796.5
+dbhealth_load_transactions_per_second{db="db"} 269485.5
+dbhealth_load_wal_bytes_per_second{db="db"} 830856.5
+dbhealth_memory_shared_buffers_bytes{db="db"} 760374
+dbhealth_oldest_transaction_seconds{db="db"} 145426
+dbhealth_partitions{db="db"} 357866
+dbhealth_probe_consecutive_failures{db="db"} 910293
+dbhealth_probe_latency_ms{db="db"} 795966
+dbhealth_probe_ok{db="db"} 0
+dbhealth_replication_lag_seconds{db="db"} 69869.5
+dbhealth_replication_replica_lag_seconds{db="db",replica="s556703"} 609918.5
+dbhealth_replication_replica_lag_seconds{db="db",replica="s617800"} 503783.5
+dbhealth_replication_slot_active{db="db",slot="s818182"} 0
+dbhealth_replication_slot_active{db="db",slot="s932397"} 1
+dbhealth_replication_slot_behind_bytes{db="db",slot="s818182"} 685897
+dbhealth_replication_slot_behind_bytes{db="db",slot="s932397"} 473194
+dbhealth_replication_slot_lost{db="db",slot="s818182"} 1
+dbhealth_replication_slot_lost{db="db",slot="s932397"} 0
+dbhealth_replication_slot_retained_bytes{db="db",slot="s818182"} 614181
+dbhealth_replication_slot_retained_bytes{db="db",slot="s932397"} 680330
+dbhealth_replication_slot_safe_wal_bytes{db="db",slot="s818182"} 136791
+dbhealth_replication_slot_safe_wal_bytes{db="db",slot="s932397"} 781120
+dbhealth_size_bytes{db="db"} 602889
+dbhealth_table_dead_rows{db="db",table="s602008"} 705387
+dbhealth_table_dead_rows{db="db",table="s781935"} 258514
+dbhealth_table_index_scans_per_second{db="db",table="s602008"} 73293.5
+dbhealth_table_index_scans_per_second{db="db",table="s781935"} 178390.5
+dbhealth_table_newest_at_seconds{db="db",table="s602008"} 1.768187435e+09
+dbhealth_table_newest_at_seconds{db="db",table="s781935"} 1.76750525e+09
+dbhealth_table_rows_deleted_per_second{db="db",table="s602008"} 585741.5
+dbhealth_table_rows_deleted_per_second{db="db",table="s781935"} 78096.5
+dbhealth_table_rows_exact{db="db",table="s602008"} 1
+dbhealth_table_rows_exact{db="db",table="s781935"} 0
+dbhealth_table_rows_inserted_per_second{db="db",table="s602008"} 576776.5
+dbhealth_table_rows_inserted_per_second{db="db",table="s781935"} 179451.5
+dbhealth_table_rows_updated_per_second{db="db",table="s602008"} 478211.5
+dbhealth_table_rows_updated_per_second{db="db",table="s781935"} 201706.5
+dbhealth_table_rows{db="db",table="s602008"} 846918
+dbhealth_table_rows{db="db",table="s781935"} 926049
+dbhealth_table_schema_changes{db="db",table="s602008"} 2
+dbhealth_table_schema_changes{db="db",table="s781935"} 2
+dbhealth_table_seq_scans_per_second{db="db",table="s602008"} 375300.5
+dbhealth_table_seq_scans_per_second{db="db",table="s781935"} 237059.5
+dbhealth_table_size_bytes{db="db",table="s602008"} 846154
+dbhealth_table_size_bytes{db="db",table="s781935"} 711877
+dbhealth_tables{db="db"} 247144
+dbhealth_wal_bytes{db="db"} 31676

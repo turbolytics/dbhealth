@@ -38,8 +38,9 @@ collector. `/healthz` is on the same port for your supervisor.
 
 ## What you get
 
-Facts, every minute, per database. Control, Prometheus and OTLP carry the
-same names; StatsD the same with dots.
+Facts, every minute, per database. Prometheus and OTLP carry the names
+below. [docs/metrics.md](docs/metrics.md) lists every metric with its StatsD
+name, its field in the report to Control and where it comes from.
 
 | | metric | from |
 |---|---|---|
