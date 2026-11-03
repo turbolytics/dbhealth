@@ -23,7 +23,7 @@ func rates(prev, now source.Counters) *wire.DatabaseLoad {
 		{prev.Queries, now.Queries}, {prev.Commits, now.Commits}, {prev.Rollbacks, now.Rollbacks},
 		{prev.RowsRead, now.RowsRead}, {prev.RowsWritten, now.RowsWritten}, {prev.BytesScanned, now.BytesScanned},
 		{prev.CacheHits, now.CacheHits}, {prev.CacheMisses, now.CacheMisses},
-		{prev.Deadlocks, now.Deadlocks}, {prev.TempBytes, now.TempBytes},
+		{prev.Deadlocks, now.Deadlocks}, {prev.TempBytes, now.TempBytes}, {prev.WALBytes, now.WALBytes},
 	}
 	for _, p := range pairs {
 		if p[0] >= 0 && p[1] < p[0] {
@@ -46,6 +46,7 @@ func rates(prev, now source.Counters) *wire.DatabaseLoad {
 		BytesScannedPerSecond: per(prev.BytesScanned, now.BytesScanned),
 		DeadlocksPerSecond:    per(prev.Deadlocks, now.Deadlocks),
 		TempBytesPerSecond:    per(prev.TempBytes, now.TempBytes),
+		WALBytesPerSecond:     per(prev.WALBytes, now.WALBytes),
 	}
 	// The interval's ratio, not the server's lifetime one; no reads, no
 	// ratio.

@@ -806,3 +806,78 @@ func TestMetrics_LoadSeries(t *testing.T) {
 	assert.False(t, strings.Contains(body, "dbhealth_load_"))
 	assert.False(t, strings.Contains(body, "dbhealth_table_dead_rows{"))
 }
+
+// slotted is a section with the WAL facts and a slot whose connector
+// stopped, beside one still streaming with no limit set.
+func slotted(d wire.Database) wire.Database {
+	wal, rate := int64(17179869184), 1048576.5
+	retained, behind, safe := int64(2147483648), int64(2147000000), int64(1073741824)
+	streaming, confirmed := int64(4096), int64(1024)
+	d.Resources.WALBytes = &wal
+	d.Load = &wire.DatabaseLoad{WALBytesPerSecond: &rate}
+	d.Replication = &wire.DatabaseReplication{Role: "primary", Slots: []wire.DatabaseReplicationSlot{
+		{Name: "billing_cdc", Type: "logical", Active: false, WALStatus: "extended", RetainedBytes: &retained, BehindBytes: &behind, SafeWALBytes: &safe},
+		{Name: "gone_cdc", Type: "logical", Active: false, WALStatus: "lost"},
+		{Name: "orders_cdc", Type: "logical", Active: true, WALStatus: "reserved", RetainedBytes: &streaming, BehindBytes: &confirmed},
+	}}
+	return d
+}
+
+func TestStatsD_SlotAndWALGauges(t *testing.T) {
+	d := slotted(database(okAt)(context.Background()))
+	lines := strings.Split(strings.TrimSpace(strings.Join(datagrams("db", &d), "")), "\n")
+	has := func(prefix string) bool {
+		for _, l := range lines {
+			if strings.HasPrefix(l, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{
+		"dbhealth.wal_bytes:17179869184|g|#db:db",
+		"dbhealth.load.wal_bytes_per_second:1048576.5|g|#db:db",
+		"dbhealth.replication.slot.active:0|g|#db:db,slot:billing_cdc",
+		"dbhealth.replication.slot.lost:0|g|#db:db,slot:billing_cdc",
+		"dbhealth.replication.slot.retained_bytes:2147483648|g|#db:db,slot:billing_cdc",
+		"dbhealth.replication.slot.behind_bytes:2147000000|g|#db:db,slot:billing_cdc",
+		"dbhealth.replication.slot.safe_wal_bytes:1073741824|g|#db:db,slot:billing_cdc",
+		"dbhealth.replication.slot.lost:1|g|#db:db,slot:gone_cdc",
+		"dbhealth.replication.slot.active:1|g|#db:db,slot:orders_cdc",
+	} {
+		if !has(want) {
+			t.Errorf("no gauge %q in:\n%s", want, strings.Join(lines, "\n"))
+		}
+	}
+	// A fact the slot does not have sends nothing, never a zero.
+	assert.False(t, has("dbhealth.replication.slot.retained_bytes:0|g|#db:db,slot:gone_cdc"))
+	assert.False(t, has("dbhealth.replication.slot.safe_wal_bytes:0|g|#db:db,slot:orders_cdc"))
+}
+
+func TestMetrics_SlotAndWALSeries(t *testing.T) {
+	core, _ := observer.New(zap.DebugLevel)
+	collect := func(ctx context.Context) wire.Database { return slotted(database(okAt)(ctx)) }
+	r, err := New(Config{Metrics: "prometheus", Interval: time.Minute, Log: zap.New(core), Now: fixedNow,
+		Instances: []Instance{{Name: "x", Collect: collect}}})
+	assert.NoError(t, err)
+	r.Once(context.Background())
+	body := scrape(t, r)
+	for _, want := range []string{
+		`dbhealth_wal_bytes{db="x"} 1.7179869184e+10`,
+		`dbhealth_load_wal_bytes_per_second{db="x"} 1.0485765e+06`,
+		`dbhealth_replication_slot_active{db="x",slot="billing_cdc"} 0`,
+		`dbhealth_replication_slot_lost{db="x",slot="billing_cdc"} 0`,
+		`dbhealth_replication_slot_retained_bytes{db="x",slot="billing_cdc"} 2.147483648e+09`,
+		`dbhealth_replication_slot_behind_bytes{db="x",slot="billing_cdc"} 2.147e+09`,
+		`dbhealth_replication_slot_safe_wal_bytes{db="x",slot="billing_cdc"} 1.073741824e+09`,
+		`dbhealth_replication_slot_lost{db="x",slot="gone_cdc"} 1`,
+		`dbhealth_replication_slot_active{db="x",slot="orders_cdc"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("no series %q in:\n%s", want, body)
+		}
+	}
+	// A fact the slot does not have is no series, never a zero.
+	assert.False(t, strings.Contains(body, `dbhealth_replication_slot_retained_bytes{db="x",slot="gone_cdc"}`))
+	assert.False(t, strings.Contains(body, `dbhealth_replication_slot_safe_wal_bytes{db="x",slot="orders_cdc"}`))
+}

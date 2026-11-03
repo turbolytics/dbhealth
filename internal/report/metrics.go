@@ -152,7 +152,13 @@ func (m *metrics) instruments() error {
 		{"dbhealth_connections_used", "connections in use"},
 		{"dbhealth_connections_max", "max_connections"},
 		{"dbhealth_connections_waiting", "connections waiting on a lock"},
-		{"dbhealth_size_bytes", "the database on disk"},
+		{"dbhealth_size_bytes", "the database on disk, WAL not included"},
+		{"dbhealth_wal_bytes", "the write-ahead log on disk, for the whole server"},
+		{"dbhealth_replication_slot_active", "1 when a consumer is connected to the slot"},
+		{"dbhealth_replication_slot_lost", "1 when the server removed WAL the slot needs"},
+		{"dbhealth_replication_slot_retained_bytes", "WAL the slot keeps on disk"},
+		{"dbhealth_replication_slot_behind_bytes", "WAL the slot's consumer has not confirmed"},
+		{"dbhealth_replication_slot_safe_wal_bytes", "WAL the server can write before the slot is at risk"},
 		{"dbhealth_tables", "tables in the database's own schemas, partitions included"},
 		{"dbhealth_partitions", "tables that are partitions"},
 		{"dbhealth_oldest_transaction_seconds", "age of the oldest open transaction"},
@@ -190,6 +196,7 @@ func (m *metrics) instruments() error {
 		{"cache_hit_ratio", "the interval's reads served from memory, 0..1"},
 		{"deadlocks_per_second", "the interval's deadlocks"},
 		{"temp_bytes_per_second", "sorts and hashes spilling to disk"},
+		{"wal_bytes_per_second", "the write-ahead log the server wrote"},
 	} {
 		if loadGauges[it[0]], err = f64("dbhealth_load_"+it[0], it[1]); err != nil {
 			return err
@@ -247,6 +254,9 @@ func (m *metrics) instruments() error {
 				}
 				if r.SizeBytes != nil {
 					o.ObserveInt64(g["dbhealth_size_bytes"], *r.SizeBytes, base)
+				}
+				if r.WALBytes != nil {
+					o.ObserveInt64(g["dbhealth_wal_bytes"], *r.WALBytes, base)
 				}
 				if r.TableCount != nil {
 					o.ObserveInt64(g["dbhealth_tables"], int64(*r.TableCount), base)
@@ -309,6 +319,20 @@ func (m *metrics) instruments() error {
 					if rep.LagSeconds != nil {
 						o.ObserveFloat64(replicaLag, *rep.LagSeconds,
 							metric.WithAttributes(attribute.String("db", db), attribute.String("replica", rep.Name)))
+					}
+				}
+				for _, s := range r.Slots {
+					tags := metric.WithAttributes(attribute.String("db", db), attribute.String("slot", s.Name))
+					o.ObserveInt64(g["dbhealth_replication_slot_active"], int64(boolInt(s.Active)), tags)
+					o.ObserveInt64(g["dbhealth_replication_slot_lost"], int64(boolInt(s.WALStatus == slotLost)), tags)
+					if s.RetainedBytes != nil {
+						o.ObserveInt64(g["dbhealth_replication_slot_retained_bytes"], *s.RetainedBytes, tags)
+					}
+					if s.BehindBytes != nil {
+						o.ObserveInt64(g["dbhealth_replication_slot_behind_bytes"], *s.BehindBytes, tags)
+					}
+					if s.SafeWALBytes != nil {
+						o.ObserveInt64(g["dbhealth_replication_slot_safe_wal_bytes"], *s.SafeWALBytes, tags)
 					}
 				}
 			}

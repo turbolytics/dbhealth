@@ -49,10 +49,11 @@ func (c *Client) Load(ctx context.Context) (source.Sample, source.Counters, []wi
 	var rowsRead, rowsWritten int64
 	err = c.row(ctx, `SELECT xact_commit, xact_rollback,
 		tup_returned + tup_fetched, tup_inserted + tup_updated + tup_deleted,
-		blks_hit, blks_read, deadlocks, temp_bytes
+		blks_hit, blks_read, deadlocks, temp_bytes,
+		CASE WHEN pg_is_in_recovery() THEN -1 ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint END
 		FROM pg_stat_database WHERE datname = current_database()`, nil,
 		&counters.Commits, &counters.Rollbacks, &rowsRead, &rowsWritten,
-		&counters.CacheHits, &counters.CacheMisses, &counters.Deadlocks, &counters.TempBytes)
+		&counters.CacheHits, &counters.CacheMisses, &counters.Deadlocks, &counters.TempBytes, &counters.WALBytes)
 	if err != nil {
 		errs = append(errs, wire.DatabaseError{Error: "pg_stat_database: " + sqlError(err)})
 		return s, source.Counters{}, errs

@@ -24,6 +24,10 @@ type Counters struct {
 	BytesScanned                int64
 	CacheHits, CacheMisses      int64
 	Deadlocks, TempBytes        int64
+	// WALBytes is the server's write-ahead log position in bytes. It only
+	// rises, so two readings are the write rate. -1 on a replica, which
+	// replays the log and writes none of its own.
+	WALBytes int64
 }
 
 // Sample is the instant of collection: what is true now. A field the kind
@@ -80,7 +84,9 @@ type Source interface {
 	// statement store's text can carry a literal, and dbhealth does not
 	// promise to strip one.
 	Load(ctx context.Context) (Sample, Counters, []wire.DatabaseError)
-	// Replication is nil, nil on a primary with no replicas.
+	// Replication is nil, nil on a primary with no replicas and no slots.
+	// A section can come back beside an error: what one read found when
+	// the other failed.
 	Replication(ctx context.Context) (*wire.DatabaseReplication, error)
 	// Queries is the running count of round trips.
 	Queries() int
