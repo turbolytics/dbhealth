@@ -58,11 +58,13 @@ name, type, label, field in the report to Control and source.
 | **what it cost** | `dbhealth_collection_queries`, `_duration_ms`, `_errors` | counted |
 
 Every series carries `db`. A field the database could not give is absent,
-not zero: a role without `pg_read_all_stats` gets an error naming the
-grant, not a connection count that is wrong. A `_per_second` rate is the
-interval's, from the database's own counters two readings apart; the
-first interval after a start or a stats reset sends none. Query text is
-never read.
+not zero. A role without `pg_read_all_stats` sends no connection or session
+counts when other sessions are hidden from it, because a count of what it can
+see would be wrong. dbhealth logs the grant once and reports no error.
+
+A `_per_second` rate is the interval's, from the database's own counters two
+readings apart; the first interval after a start or a stats reset sends none.
+Query text is never read.
 
 **What it costs the database:** one `SELECT 1`, ten catalog reads on a primary, eight on a replica, and per
 table one estimate and one `max()`, every interval. `count(*)` only where

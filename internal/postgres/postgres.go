@@ -13,6 +13,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,6 +42,9 @@ type Client struct {
 
 	probeSQL  string // SELECT 1; a test swaps in a slow one
 	walOnDisk bool   // WithWALOnDisk
+
+	notice     func(string) // WithNotice
+	noticeOnce sync.Once
 }
 
 // Open prepares the pool. It does not connect: the first probe does, so
@@ -68,6 +72,24 @@ func Open(ctx context.Context, dsn string, timeout time.Duration) (*Client, erro
 func (c *Client) WithWALOnDisk(on bool) *Client {
 	c.walOnDisk = on
 	return c
+}
+
+// WithNotice sets where a message for the operator goes. It is for what a
+// default install should know and need not act on, so it is not an error.
+func (c *Client) WithNotice(f func(string)) *Client {
+	c.notice = f
+	return c
+}
+
+// sessionsHidden says once why the counts are absent. A role with no extra
+// grants is a default install, and an error on every report would tell it
+// something is broken.
+func (c *Client) sessionsHidden() {
+	c.noticeOnce.Do(func() {
+		if c.notice != nil {
+			c.notice("other sessions are hidden from this role, so connection and session counts are absent; grant pg_read_all_stats to read them")
+		}
+	})
 }
 
 // Close releases the connections.
@@ -167,10 +189,8 @@ func (c *Client) Resources(ctx context.Context) (*wire.DatabaseResources, []wire
 		// Another role's sessions show as rows with their type, state,
 		// wait event and transaction start as NULL. A count of what this
 		// role can see would be a small number passed off as true, so
-		// connections and the oldest transaction are withheld and the
-		// error says what to grant.
-		errs = append(errs, wire.DatabaseError{Error: fmt.Sprintf(
-			"pg_stat_activity: %d other sessions hidden from this role; grant pg_read_all_stats", hidden)})
+		// connections and the oldest transaction are withheld.
+		c.sessionsHidden()
 	default:
 		r.Connections = &wire.DatabaseConnections{Used: used, Max: max, Waiting: waiting}
 	}
