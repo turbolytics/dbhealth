@@ -219,8 +219,8 @@ func TestResources_AllFields(t *testing.T) {
 	assert.NotNil(t, r.OldestTransactionSeconds)
 	assert.NotNil(t, r.Memory)
 	assert.That(t, r.Memory.SharedBuffersBytes > 0)
-	assert.NotNil(t, r.WALBytes)
-	assert.That(t, *r.WALBytes > 0)
+	// Off unless asked, even for a role that could read it.
+	assert.Nil(t, r.WALBytes)
 }
 
 // A database counts its tables in its own schemas, partitions included,
@@ -274,15 +274,13 @@ func TestResources_ReaderRoleIsToldWhatIsHidden(t *testing.T) {
 	assert.Nil(t, r.Connections)
 	assert.Nil(t, r.OldestTransactionSeconds)
 	assert.NotNil(t, r.SizeBytes)
-	// The role cannot list the WAL directory either. That hides one fact,
-	// and the error names the grant that brings it back.
+	// By default dbhealth does not try the WAL directory, so the role's
+	// missing grant costs no error.
 	assert.Nil(t, r.WALBytes)
-	assert.Equal(t, 2, len(errs))
+	assert.Equal(t, 1, len(errs))
 	assert.Equal(t, "", errs[0].Table)
 	assert.That(t, strings.Contains(errs[0].Error, "pg_stat_activity"))
 	assert.That(t, strings.Contains(errs[0].Error, "pg_read_all_stats"))
-	assert.That(t, strings.Contains(errs[1].Error, "pg_ls_waldir"))
-	assert.That(t, strings.Contains(errs[1].Error, "pg_monitor"))
 }
 
 func discover(t *testing.T, c *Client, d config.Discover) ([]config.StaticTable, int) {
@@ -441,7 +439,11 @@ func TestQueries_CountEveryRoundTrip(t *testing.T) {
 	c.Probe(context.Background(), time.Second)
 	assert.Equal(t, before+1, c.Queries())
 	c.Resources(context.Background())
-	assert.Equal(t, before+7, c.Queries())
+	assert.Equal(t, before+6, c.Queries())
+	// wal_on_disk costs one more read, as the README says.
+	before = c.Queries()
+	c.WithWALOnDisk(true).Resources(context.Background())
+	assert.Equal(t, before+6, c.Queries())
 }
 
 // Findings from the review of #4.

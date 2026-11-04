@@ -30,6 +30,7 @@ type File struct {
 	Probe     Probe
 	Tables    Tables
 	Load      LoadSection
+	WALOnDisk WALOnDisk
 	Report    Report
 }
 
@@ -94,6 +95,13 @@ type LoadSection struct {
 	Enabled bool
 }
 
+// WALOnDisk lists the WAL directory for dbhealth_wal_bytes. Off by default:
+// the read needs pg_monitor, which most roles lack, and dbhealth runs without
+// extra grants. Slots and the WAL write rate need no grant and stay on.
+type WALOnDisk struct {
+	Enabled bool
+}
+
 // Report is where the facts go: control, StatsD, an OpenTelemetry
 // exporter, any of them.
 type Report struct {
@@ -135,6 +143,9 @@ type file struct {
 	Load struct {
 		Enabled *bool `yaml:"enabled"`
 	} `yaml:"load"`
+	WALOnDisk struct {
+		Enabled *bool `yaml:"enabled"`
+	} `yaml:"wal_on_disk"`
 	Report struct {
 		To         string `yaml:"to"`
 		Credential string `yaml:"credential"`
@@ -269,6 +280,9 @@ func (in *file) resolve() (*File, error) {
 	if in.Load.Enabled != nil {
 		f.Load.Enabled = *in.Load.Enabled
 	}
+	if in.WALOnDisk.Enabled != nil {
+		f.WALOnDisk.Enabled = *in.WALOnDisk.Enabled
+	}
 	if f.Report.Listen == "" {
 		f.Report.Listen = DefaultListen
 	}
@@ -341,6 +355,7 @@ const DefaultReportTo = "https://ingest.turbolytics.io"
 //	DBHEALTH_OTLP       the OTLP collector, as http://collector:4318
 //	DBHEALTH_LISTEN     where /metrics and /healthz answer; defaults to :8000
 //	DBHEALTH_LOAD       false to leave the load sub-section out
+//	DBHEALTH_WAL_ON_DISK true to read the WAL on disk; needs pg_monitor
 func FromEnv() (*File, error) {
 	dsn := os.Getenv("DBHEALTH_DSN")
 	if dsn == "" {
@@ -390,6 +405,15 @@ func FromEnv() (*File, error) {
 	if v, ok := os.LookupEnv("DBHEALTH_LOAD"); ok {
 		on := v != "false" && v != "0" && v != "off"
 		in.Load.Enabled = &on
+	}
+	switch v := os.Getenv("DBHEALTH_WAL_ON_DISK"); v {
+	case "true", "1", "on":
+		on := true
+		in.WALOnDisk.Enabled = &on
+	case "false", "0", "off", "":
+	default:
+		// Refused rather than read as off: whoever set it asked for something.
+		return nil, fmt.Errorf("DBHEALTH_WAL_ON_DISK: %q; must be true or false", v)
 	}
 	f, err := in.resolve()
 	if err != nil {

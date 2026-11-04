@@ -39,7 +39,8 @@ type Client struct {
 	timeout time.Duration
 	queries atomic.Int64
 
-	probeSQL string // SELECT 1; a test swaps in a slow one
+	probeSQL  string // SELECT 1; a test swaps in a slow one
+	walOnDisk bool   // WithWALOnDisk
 }
 
 // Open prepares the pool. It does not connect: the first probe does, so
@@ -61,6 +62,12 @@ func Open(ctx context.Context, dsn string, timeout time.Duration) (*Client, erro
 		return nil, errors.New("the pool did not open")
 	}
 	return &Client{pool: pool, timeout: timeout, probeSQL: "SELECT 1"}, nil
+}
+
+// WithWALOnDisk sets whether Resources lists the WAL directory; off by default.
+func (c *Client) WithWALOnDisk(on bool) *Client {
+	c.walOnDisk = on
+	return c
 }
 
 // Close releases the connections.
@@ -204,6 +211,9 @@ func (c *Client) Resources(ctx context.Context) (*wire.DatabaseResources, []wire
 		r.Memory = &wire.DatabaseMemory{SharedBuffersBytes: shared}
 	}
 
+	if !c.walOnDisk {
+		return &r, errs
+	}
 	var wal int64
 	err = c.row(ctx, `SELECT COALESCE(sum(size), 0)::bigint FROM pg_ls_waldir()`, nil, &wal)
 	var pgErr *pgconn.PgError

@@ -68,6 +68,8 @@ tables:
   rows: exact
   freshness_interval_seconds: 2
   rows_exact_interval_seconds: 2
+wal_on_disk:
+  enabled: true
 report:
   statsd: ${SD}:8125
   metrics: prometheus
@@ -115,7 +117,9 @@ grep -q 'dbhealth_probe_ok{db="release-test"} 1' "$WORK/metrics.txt" && echo "ok
 grep -q 'dbhealth_table_rows{db="release-test",table="public.events"} 250' "$WORK/metrics.txt" && echo "ok   /metrics table_rows" || { echo "MISSING /metrics dbhealth_table_rows"; fail=1; }
 grep -q 'dbhealth_load_sessions_active_now{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics load sample" || { echo "MISSING /metrics dbhealth_load_sessions_active_now"; fail=1; }
 grep -q 'dbhealth_load_transactions_per_second{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics load rate" || { echo "MISSING /metrics dbhealth_load_transactions_per_second (needs two intervals)"; fail=1; }
-grep -q 'dbhealth_wal_bytes{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics wal_bytes" || { echo "MISSING /metrics dbhealth_wal_bytes"; fail=1; }
+grep -q 'dbhealth_wal_bytes{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics wal_bytes with wal_on_disk on" || { echo "MISSING /metrics dbhealth_wal_bytes"; fail=1; }
+# The quick start sets nothing, and its role could read the WAL directory.
+grep -q '^dbhealth_wal_bytes' "$WORK/quick.txt" && { echo "UNASKED quick start read the WAL directory"; fail=1; } || echo "ok   quick start leaves wal_bytes off"
 grep -q 'dbhealth_load_wal_bytes_per_second{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics wal rate" || { echo "MISSING /metrics dbhealth_load_wal_bytes_per_second (needs two intervals)"; fail=1; }
 grep -q 'dbhealth_replication_slot_active{db="release-test",slot="release_slot"} 0' "$WORK/metrics.txt" && echo "ok   /metrics slot with no consumer" || { echo "MISSING /metrics dbhealth_replication_slot_active"; fail=1; }
 grep -q 'dbhealth_replication_slot_retained_bytes{db="release-test",slot="release_slot"}' "$WORK/metrics.txt" && echo "ok   /metrics slot retained bytes" || { echo "MISSING /metrics dbhealth_replication_slot_retained_bytes"; fail=1; }
