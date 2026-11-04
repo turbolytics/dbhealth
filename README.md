@@ -39,8 +39,10 @@ collector. `/healthz` is on the same port for your supervisor.
 ## What you get
 
 Facts, every minute, per database. Prometheus and OTLP carry the names
-below. [docs/metrics.md](docs/metrics.md) lists every metric with its StatsD
-name, its field in the report to Control and where it comes from.
+below.
+
+**[See every metric in docs/metrics.md](docs/metrics.md)**, with its StatsD
+name, type, label, field in the report to Control and source.
 
 | | metric | from |
 |---|---|---|
@@ -101,6 +103,9 @@ errors name the grant.
 
 dbhealth cannot see free disk, because Postgres does not report it through
 SQL. Read it from your host or your cloud's metrics.
+
+[docs/metrics.md](docs/metrics.md) lists each of these metrics with its StatsD
+name and source.
 
 ## Config
 
