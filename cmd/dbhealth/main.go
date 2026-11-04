@@ -106,6 +106,7 @@ func serve(f *config.File, path string) int {
 		}
 		defer client.Close()
 		client.WithWALOnDisk(f.WALOnDisk.Enabled)
+		client.WithNotice(func(msg string) { log.Info(msg, zap.String("instance", db.Name)) })
 		c := collector.New(db, f.Tables, f.Probe, client, time.Now).WithLoad(f.Load)
 		instances = append(instances, instanceOf(db, c.Collect))
 		log.Info("watching", zap.String("instance", db.Name), zap.String("target", c.Target()))

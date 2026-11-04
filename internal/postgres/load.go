@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/turbolytics/sql-flow/turbostats/wire"
@@ -34,10 +33,8 @@ func (c *Client) Load(ctx context.Context) (source.Sample, source.Counters, []wi
 		errs = append(errs, wire.DatabaseError{Error: "pg_stat_activity: " + sqlError(err)})
 	case hidden > 0:
 		// Another role's sessions, their state hidden: a sample of what
-		// this role can see would be passed off as the whole. Resources
-		// already names the grant; this is the same fact.
-		errs = append(errs, wire.DatabaseError{Error: fmt.Sprintf(
-			"pg_stat_activity: %d other sessions hidden from this role; grant pg_read_all_stats", hidden)})
+		// this role can see would be passed off as the whole.
+		c.sessionsHidden()
 	default:
 		s.SessionsActive, s.SessionsIdleInTransaction, s.SessionsWaiting = &active, &idleInTx, &waiting
 		s.LongestQuerySeconds = &longest

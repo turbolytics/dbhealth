@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/zeebo/assert"
@@ -61,8 +60,8 @@ func TestLoad_ResetIsVisible(t *testing.T) {
 }
 
 // A role without pg_read_all_stats reads pg_stat_database but sees other
-// sessions' state as NULL: the counters come back, the sample does not,
-// and the error is the one resources already sends.
+// sessions' state as NULL: the counters come back, the sample does not, and
+// a role with no extra grants costs no error.
 func TestLoad_ReaderRoleGetsCountersNotSample(t *testing.T) {
 	admin := open(t, adminDSN)
 	tx, err := admin.pool.Begin(context.Background())
@@ -73,8 +72,7 @@ func TestLoad_ReaderRoleGetsCountersNotSample(t *testing.T) {
 	assert.That(t, counters.Commits > 0)
 	assert.Nil(t, s.SessionsActive)
 	assert.Nil(t, s.LongestQuerySeconds)
-	assert.Equal(t, 1, len(errs))
-	assert.That(t, strings.Contains(errs[0].Error, "pg_read_all_stats"))
+	assert.Equal(t, 0, len(errs))
 }
 
 func TestTable_CarriesItsCounters(t *testing.T) {

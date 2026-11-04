@@ -258,9 +258,8 @@ func TestResources_CountsTablesAndPartitions(t *testing.T) {
 // sessions' rows in pg_stat_activity with their type, state, wait event
 // and transaction start hidden. A count of what it can see would be a
 // small number passed off as true, so connections and the oldest
-// transaction are withheld and the error says how many sessions are
-// hidden and what to grant. Size and memory still come back.
-func TestResources_ReaderRoleIsToldWhatIsHidden(t *testing.T) {
+// transaction are withheld. Size and memory still come back.
+func TestResources_HiddenSessionsWithholdTheirCounts(t *testing.T) {
 	admin := open(t, adminDSN)
 	// Another session, held open in a transaction, that the reader cannot see into.
 	tx, err := admin.pool.Begin(context.Background())
@@ -274,13 +273,29 @@ func TestResources_ReaderRoleIsToldWhatIsHidden(t *testing.T) {
 	assert.Nil(t, r.Connections)
 	assert.Nil(t, r.OldestTransactionSeconds)
 	assert.NotNil(t, r.SizeBytes)
-	// By default dbhealth does not try the WAL directory, so the role's
-	// missing grant costs no error.
+	// A role with no extra grants is a default install, so it costs no error.
 	assert.Nil(t, r.WALBytes)
-	assert.Equal(t, 1, len(errs))
-	assert.Equal(t, "", errs[0].Table)
-	assert.That(t, strings.Contains(errs[0].Error, "pg_stat_activity"))
-	assert.That(t, strings.Contains(errs[0].Error, "pg_read_all_stats"))
+	assert.Equal(t, 0, len(errs))
+}
+
+// The counts stay withheld, so an operator wondering why needs the grant
+// named somewhere: once a process in the log, not on every report.
+func TestResources_HiddenSessionsNameTheGrantOnce(t *testing.T) {
+	admin := open(t, adminDSN)
+	tx, err := admin.pool.Begin(context.Background())
+	assert.NoError(t, err)
+	defer tx.Rollback(context.Background())
+	_, err = tx.Exec(context.Background(), "SELECT 1")
+	assert.NoError(t, err)
+
+	var notices []string
+	c := open(t, readerDSN).WithNotice(func(msg string) { notices = append(notices, msg) })
+	for i := 0; i < 3; i++ {
+		c.Resources(context.Background())
+		c.Load(context.Background())
+	}
+	assert.Equal(t, 1, len(notices))
+	assert.That(t, strings.Contains(notices[0], "pg_read_all_stats"))
 }
 
 func discover(t *testing.T, c *Client, d config.Discover) ([]config.StaticTable, int) {

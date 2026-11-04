@@ -14,11 +14,12 @@ NET=dbhealth-rt-$$
 PG=dbhealth-rt-pg-$$
 RUN=dbhealth-rt-run-$$
 QUICK=dbhealth-rt-quick-$$
+PLAIN=dbhealth-rt-plain-$$
 SD=dbhealth-rt-statsd-$$
 PASS=rt-secret-$$
 WORK=$(mktemp -d)
 cleanup() {
-  docker rm -f "$PG" "$RUN" "$QUICK" "$SD" >/dev/null 2>&1 || true
+  docker rm -f "$PG" "$RUN" "$QUICK" "$PLAIN" "$SD" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
@@ -102,6 +103,18 @@ docker run -d --name "$QUICK" --network "$NET" -e DBHEALTH_DSN="$DSN" -e DBHEALT
 sleep 5
 docker run --rm --network "$NET" curlimages/curl:8.11.1 -s "http://${QUICK}:8000/metrics" > "$WORK/quick.txt" || true
 docker logs "$QUICK" > "$WORK/quick.log" 2>&1
+
+# A default install: no extra grants, and another role's session it cannot
+# see into. It reads the one table discovery finds, so no error is expected.
+echo "default install, a role with no extra grants:"
+docker exec "$PG" psql -U rt -d rt -q \
+  -c "CREATE ROLE plain LOGIN PASSWORD '$PASS'" \
+  -c "GRANT SELECT ON public.events TO plain" >/dev/null
+docker exec -d "$PG" psql -U rt -d rt -c "SELECT pg_sleep(30)" >/dev/null
+docker run -d --name "$PLAIN" --network "$NET" -e DBHEALTH_DSN="postgres://plain:${PASS}@${PG}:5432/rt?sslmode=disable" -e DBHEALTH_METRICS=prometheus "$IMAGE" >/dev/null
+sleep 5
+docker run --rm --network "$NET" curlimages/curl:8.11.1 -s "http://${PLAIN}:8000/metrics" > "$WORK/plain.txt" || true
+docker logs "$PLAIN" > "$WORK/plain.log" 2>&1
 docker rm -f "$QUICK" >/dev/null 2>&1 || true
 
 fail=0
@@ -123,7 +136,11 @@ grep -q '^dbhealth_wal_bytes' "$WORK/quick.txt" && { echo "UNASKED quick start r
 grep -q 'dbhealth_load_wal_bytes_per_second{db="release-test"}' "$WORK/metrics.txt" && echo "ok   /metrics wal rate" || { echo "MISSING /metrics dbhealth_load_wal_bytes_per_second (needs two intervals)"; fail=1; }
 grep -q 'dbhealth_replication_slot_active{db="release-test",slot="release_slot"} 0' "$WORK/metrics.txt" && echo "ok   /metrics slot with no consumer" || { echo "MISSING /metrics dbhealth_replication_slot_active"; fail=1; }
 grep -q 'dbhealth_replication_slot_retained_bytes{db="release-test",slot="release_slot"}' "$WORK/metrics.txt" && echo "ok   /metrics slot retained bytes" || { echo "MISSING /metrics dbhealth_replication_slot_retained_bytes"; fail=1; }
+grep -q '^dbhealth_probe_ok{.*} 1' "$WORK/plain.txt" && echo "ok   default install answers" || { echo "MISSING default install /metrics"; cat "$WORK/plain.log"; fail=1; }
+grep -q '^dbhealth_collection_errors{.*} 0' "$WORK/plain.txt" && echo "ok   default install reports no error" || { echo "UNASKED default install reports an error"; grep '^dbhealth_collection_errors' "$WORK/plain.txt"; fail=1; }
+grep -q '^dbhealth_connections_used' "$WORK/plain.txt" && { echo "WRONG default install sent a partial connection count"; fail=1; } || echo "ok   default install withholds a partial count"
+[ "$(grep -c pg_read_all_stats "$WORK/plain.log")" = 1 ] && echo "ok   default install logs the grant once" || { echo "MISSING the grant, once, in the log"; cat "$WORK/plain.log"; fail=1; }
 grep -q "dbhealth started" "$WORK/run.log" || { echo "MISSING started log line"; fail=1; }
 grep -q "dbhealth stopped" "$WORK/run.log" || { echo "MISSING clean stop on SIGTERM"; fail=1; }
-if grep -q "$PASS" "$WORK/run.log" "$WORK/statsd.txt" "$WORK/metrics.txt"; then echo "LEAK: the password is in the output"; fail=1; fi
+if grep -q "$PASS" "$WORK/run.log" "$WORK/statsd.txt" "$WORK/metrics.txt" "$WORK/plain.log" "$WORK/plain.txt"; then echo "LEAK: the password is in the output"; fail=1; fi
 exit $fail
