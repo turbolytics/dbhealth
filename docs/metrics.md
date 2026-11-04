@@ -44,7 +44,7 @@ the JSON path in the report to Control.
 | `dbhealth_connections_max` | int | `connections.max` |  | max_connections | `resources.connections.max` | max_connections |
 | `dbhealth_connections_waiting` | int | `connections.waiting` |  | connections waiting on a lock | `resources.connections.waiting` | pg_stat_activity |
 | `dbhealth_size_bytes` | int | `size_bytes` |  | the database on disk, WAL not included | `resources.size_bytes` | pg_database_size |
-| `dbhealth_wal_bytes` | int | `wal_bytes` |  | the write-ahead log on disk, for the whole server | `resources.wal_bytes` | pg_ls_waldir |
+| `dbhealth_wal_bytes` | int | `wal_bytes` |  | the write-ahead log on disk, for the whole server | `resources.wal_bytes` | pg_ls_waldir, with wal_on_disk on |
 | `dbhealth_oldest_transaction_seconds` | int | `oldest_transaction_seconds` |  | age of the oldest open transaction | `resources.oldest_transaction_seconds` | pg_stat_activity |
 | `dbhealth_memory_shared_buffers_bytes` | int | `memory.shared_buffers_bytes` |  | shared_buffers | `resources.memory.shared_buffers_bytes` | shared_buffers |
 

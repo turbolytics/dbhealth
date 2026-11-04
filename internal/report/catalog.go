@@ -94,7 +94,7 @@ var catalog = compile([]fact{
 	{Name: "dbhealth_connections_max", StatsD: "connections.max", Group: limits, Help: "max_connections", Wire: "resources.connections.max", Postgres: "max_connections"},
 	{Name: "dbhealth_connections_waiting", StatsD: "connections.waiting", Group: limits, Help: "connections waiting on a lock", Wire: "resources.connections.waiting", Postgres: "pg_stat_activity"},
 	{Name: "dbhealth_size_bytes", StatsD: "size_bytes", Group: limits, Help: "the database on disk, WAL not included", Wire: "resources.size_bytes", Postgres: "pg_database_size"},
-	{Name: "dbhealth_wal_bytes", StatsD: "wal_bytes", Group: limits, Help: "the write-ahead log on disk, for the whole server", Wire: "resources.wal_bytes", Postgres: "pg_ls_waldir"},
+	{Name: "dbhealth_wal_bytes", StatsD: "wal_bytes", Group: limits, Help: "the write-ahead log on disk, for the whole server", Wire: "resources.wal_bytes", Postgres: "pg_ls_waldir, with wal_on_disk on"},
 	{Name: "dbhealth_oldest_transaction_seconds", StatsD: "oldest_transaction_seconds", Group: limits, Help: "age of the oldest open transaction", Wire: "resources.oldest_transaction_seconds", Postgres: "pg_stat_activity"},
 	{Name: "dbhealth_memory_shared_buffers_bytes", StatsD: "memory.shared_buffers_bytes", Group: limits, Help: "shared_buffers", Wire: "resources.memory.shared_buffers_bytes", Postgres: "shared_buffers"},
 

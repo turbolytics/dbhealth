@@ -432,6 +432,36 @@ func TestConfig_LoadDefaultsOnAndRules(t *testing.T) {
 	contains(t, loadErr(t, minimal+"load:\n  queries:\n    top: 5\n"), "queries")
 }
 
+// Reading the WAL directory takes a grant most roles lack, so a default
+// install must not ask for it and report an error for every interval.
+func TestConfig_WALOnDiskIsOffUnlessAsked(t *testing.T) {
+	f, err := Load(write(t, minimal))
+	assert.NoError(t, err)
+	assert.False(t, f.WALOnDisk.Enabled)
+	f, err = Load(write(t, minimal+"wal_on_disk:\n  enabled: true\n"))
+	assert.NoError(t, err)
+	assert.True(t, f.WALOnDisk.Enabled)
+}
+
+func TestConfig_FromEnvWALOnDisk(t *testing.T) {
+	t.Setenv("DBHEALTH_DSN", "postgres://u:secret@pg.internal:5432/billing")
+	t.Setenv("DBHEALTH_METRICS", "prometheus")
+	f, err := FromEnv()
+	assert.NoError(t, err)
+	assert.False(t, f.WALOnDisk.Enabled)
+	for v, want := range map[string]bool{"true": true, "1": true, "on": true, "false": false, "0": false, "off": false, "": false} {
+		t.Setenv("DBHEALTH_WAL_ON_DISK", v)
+		f, err := FromEnv()
+		assert.NoError(t, err)
+		assert.Equal(t, want, f.WALOnDisk.Enabled)
+	}
+	// A typo must not read as off: the operator asked for something.
+	t.Setenv("DBHEALTH_WAL_ON_DISK", "yes")
+	_, err = FromEnv()
+	assert.Error(t, err)
+	assert.That(t, strings.Contains(err.Error(), "DBHEALTH_WAL_ON_DISK"))
+}
+
 func TestConfig_FromEnvLoad(t *testing.T) {
 	t.Setenv("DBHEALTH_DSN", "postgres://u:p@h:5432/d")
 	t.Setenv("DBHEALTH_KEY", "sfc_x")

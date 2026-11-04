@@ -196,6 +196,30 @@ func TestReplication_ARoleWithNoGrantsSeesSlots(t *testing.T) {
 	assert.NotNil(t, s.RetainedBytes)
 }
 
+// An operator who turned on wal_on_disk asked for the fact, so a role that
+// cannot read it gets an error naming the grant, not silence.
+func TestResources_WALOnDiskWithoutTheGrantNamesIt(t *testing.T) {
+	r, errs := open(t, readerDSN).WithWALOnDisk(true).Resources(context.Background())
+	assert.Nil(t, r.WALBytes)
+	var got []string
+	for _, e := range errs {
+		got = append(got, e.Error)
+	}
+	assert.That(t, strings.Contains(strings.Join(got, "\n"), "pg_ls_waldir"))
+	assert.That(t, strings.Contains(strings.Join(got, "\n"), "pg_monitor"))
+}
+
+// A role with no grants loses no slot fact and sees no WAL error by default:
+// the facts that catch a stopped connector need nothing extra.
+func TestResources_NoGrantsStillSeesSlotsWithNoWALError(t *testing.T) {
+	r, errs := open(t, readerDSN).Resources(context.Background())
+	assert.Nil(t, r.WALBytes)
+	for _, e := range errs {
+		assert.False(t, strings.Contains(e.Error, "pg_ls_waldir"))
+		assert.False(t, strings.Contains(e.Error, "pg_monitor"))
+	}
+}
+
 // The error tells a role without the grant to take pg_monitor, so that
 // grant has to bring the fact back.
 func TestResources_PgMonitorBringsWALBytesBack(t *testing.T) {
@@ -208,7 +232,7 @@ func TestResources_PgMonitorBringsWALBytesBack(t *testing.T) {
 		assert.NoError(t, err)
 	})
 	admin(t, `GRANT pg_monitor TO monitored`)
-	r, errs := open(t, strings.Replace(adminDSN, "admin:admin@", "monitored:monitored@", 1)).Resources(context.Background())
+	r, errs := open(t, strings.Replace(adminDSN, "admin:admin@", "monitored:monitored@", 1)).WithWALOnDisk(true).Resources(context.Background())
 	assert.Equal(t, 0, len(errs))
 	assert.NotNil(t, r.WALBytes)
 	assert.That(t, *r.WALBytes > 0)
@@ -276,7 +300,7 @@ func TestAStandby_ReportsNoSlotsAndKeepsItsLoad(t *testing.T) {
 	assert.Equal(t, int64(-1), counters.WALBytes)
 	assert.That(t, !counters.At.IsZero())
 
-	res, errs := c.Resources(ctx)
+	res, errs := c.WithWALOnDisk(true).Resources(ctx)
 	assert.Equal(t, 0, len(errs))
 	assert.NotNil(t, res.WALBytes)
 }

@@ -62,17 +62,18 @@ interval's, from the database's own counters two readings apart; the
 first interval after a start or a stats reset sends none. Query text is
 never read.
 
-**What it costs the database:** one `SELECT 1`, eleven catalog reads on a primary, nine on a replica, and per
+**What it costs the database:** one `SELECT 1`, ten catalog reads on a primary, eight on a replica, and per
 table one estimate and one `max()`, every interval. `count(*)` only where
-you ask, once an hour. `load: {enabled: false}` drops two of the reads.
+you ask, once an hour. `load: {enabled: false}` drops two of the reads, and
+`wal_on_disk: {enabled: true}` adds one.
 
 ## Replication slots and WAL
 
 A CDC connector that stops, such as Debezium, leaves `pg_stat_replication`.
 Its replication slot stays and holds WAL until the disk fills.
 `dbhealth_replication_slot_active` falls to 0, and
-`dbhealth_replication_slot_retained_bytes` and `dbhealth_wal_bytes` keep
-climbing.
+`dbhealth_replication_slot_retained_bytes` keeps climbing. These facts need no
+grant.
 
 - **`_retained_bytes`** is the WAL the slot keeps on disk.
 - **`_behind_bytes`** is the WAL its consumer has not confirmed. A logical
@@ -87,12 +88,16 @@ reports all of its slots. A report carries at most 32, the ones holding the
 most WAL first. Slots need Postgres 13 or later, and CI runs every integration
 test against Postgres 13 through 18.
 
-`dbhealth_wal_bytes` needs `pg_monitor`. Without it, the field is absent and
-the report's errors name the grant:
+`dbhealth_wal_bytes` is the WAL on disk for the whole server. It is off by
+default, because it needs a grant. To turn it on, grant the role `pg_monitor`
+and set `wal_on_disk: {enabled: true}`:
 
 ```sql
 GRANT pg_monitor TO dbhealth;
 ```
+
+If it is on and the role lacks the grant, the field is absent and the report's
+errors name the grant.
 
 dbhealth cannot see free disk, because Postgres does not report it through
 SQL. Read it from your host or your cloud's metrics.
@@ -139,6 +144,9 @@ tables:
 load:
   enabled: true                       # sessions and rates; two catalog reads an interval
 
+wal_on_disk:
+  enabled: false                      # the WAL directory's size; needs GRANT pg_monitor
+
 report:
   to: https://ingest.turbolytics.io/v1/turbostats
   credential: "{{ TURBOSTATS_CREDENTIAL }}"
@@ -179,6 +187,7 @@ sends no write or scan rates for that interval.
 | `DBHEALTH_LABELS` | labels, as `client=acme,env=prod` |
 | `DBHEALTH_METRICS` | `prometheus` or `otlp` |
 | `DBHEALTH_LOAD` | `false` to leave the load facts out |
+| `DBHEALTH_WAL_ON_DISK` | `true` to read the WAL on disk; needs `pg_monitor` |
 | `DBHEALTH_OTLP`, `DBHEALTH_LISTEN`, `DBHEALTH_STATSD` | the collector; the listen address (`:8000`); StatsD |
 
 The connection string never leaves the process. What is sent is
