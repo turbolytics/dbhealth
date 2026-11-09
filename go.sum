@@ -137,6 +137,10 @@ github.com/tklauser/numcpus v0.12.0 h1:NR85qdvHA9pFse3x3weVZ0r0ST8R6l5RHbZrlRaqo
 github.com/tklauser/numcpus v0.12.0/go.mod h1:ABHeXzJnr/qqwguhClkZKT1/8VABcYrsyUiUGobwWJg=
 github.com/turbolytics/sql-flow v1.2.1-0.20261103142501-1ca7c0d5bf13 h1:RM5RTY/5IwrrNSkH5HRUOt0SUW/eeCWMPhrnnZHKy4k=
 github.com/turbolytics/sql-flow v1.2.1-0.20261103142501-1ca7c0d5bf13/go.mod h1:nHCO0XYNzPt3unznQeV4DJLsc6frzx3IxBUj8F7HN3c=
+github.com/turbolytics/sql-flow v1.2.1-0.20261109204056-f086a8a23cd3 h1:6ymcbIA7IQAnTiV1CH7LlaHUTTg+2MHoR/v0tdn6Eeo=
+github.com/turbolytics/sql-flow v1.2.1-0.20261109204056-f086a8a23cd3/go.mod h1:nHCO0XYNzPt3unznQeV4DJLsc6frzx3IxBUj8F7HN3c=
+github.com/turbolytics/sql-flow v1.2.1-0.20261109211004-c4dee3540e81 h1:iXYzZ8/pRdkLccSQh4c5Yr07MYay+g9x4rld7hAhsbw=
+github.com/turbolytics/sql-flow v1.2.1-0.20261109211004-c4dee3540e81/go.mod h1:nHCO0XYNzPt3unznQeV4DJLsc6frzx3IxBUj8F7HN3c=
 github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=
 github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
 github.com/zeebo/assert v1.3.1 h1:vukIABvugfNMZMQO1ABsyQDJDTVQbn+LWSMy1ol1h6A=
