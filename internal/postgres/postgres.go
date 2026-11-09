@@ -494,13 +494,19 @@ func (c *Client) slots(ctx context.Context) ([]wire.DatabaseReplicationSlot, err
 	c.queries.Add(1)
 	qctx, cancel := c.bounded(ctx)
 	defer cancel()
-	rows, err := c.pool.Query(qctx, `SELECT slot_name::text, slot_type, COALESCE(plugin::text, ''),
-		COALESCE(database::text, ''), active, COALESCE(wal_status, ''),
-		pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint AS retained,
-		pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)::bigint,
-		safe_wal_size
-		FROM pg_replication_slots
-		ORDER BY retained DESC NULLS LAST, slot_name
+	// The join names the connection holding each slot. pg_stat_replication
+	// shows usename and application_name to a role with no grants, and a
+	// consumer that isn't a replication connection has no row, so it names
+	// nobody.
+	rows, err := c.pool.Query(qctx, `SELECT s.slot_name::text, s.slot_type, COALESCE(s.plugin::text, ''),
+		COALESCE(s.database::text, ''), s.active, COALESCE(s.wal_status, ''),
+		pg_wal_lsn_diff(pg_current_wal_lsn(), s.restart_lsn)::bigint AS retained,
+		pg_wal_lsn_diff(pg_current_wal_lsn(), s.confirmed_flush_lsn)::bigint,
+		s.safe_wal_size,
+		COALESCE(r.application_name, ''), COALESCE(r.usename::text, '')
+		FROM pg_replication_slots s
+		LEFT JOIN pg_stat_replication r ON s.active AND r.pid = s.active_pid
+		ORDER BY retained DESC NULLS LAST, s.slot_name
 		LIMIT $1`, wire.MaxDatabaseReplicationSlots)
 	if err != nil {
 		return nil, errors.New("pg_replication_slots: " + sqlError(err))
@@ -510,7 +516,8 @@ func (c *Client) slots(ctx context.Context) ([]wire.DatabaseReplicationSlot, err
 	for rows.Next() {
 		var s wire.DatabaseReplicationSlot
 		if err := rows.Scan(&s.Name, &s.Type, &s.Plugin, &s.Database, &s.Active, &s.WALStatus,
-			&s.RetainedBytes, &s.BehindBytes, &s.SafeWALBytes); err != nil {
+			&s.RetainedBytes, &s.BehindBytes, &s.SafeWALBytes,
+			&s.ConsumerApplicationName, &s.ConsumerUser); err != nil {
 			return nil, errors.New("pg_replication_slots: " + sqlError(err))
 		}
 		slots = append(slots, s)

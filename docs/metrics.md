@@ -126,6 +126,8 @@ Control receives these fields. No output sends them, for these reasons:
 | `replication.last_replayed_at` | dbhealth_replication_lag_seconds says the same as an age |
 | `replication.replicas.state` | a word; the replica's state |
 | `replication.role` | a word; primary or replica |
+| `replication.slots.consumer_application_name` | a word; the application_name of the connection holding the slot |
+| `replication.slots.consumer_user` | a word; the user of the connection holding the slot |
 | `replication.slots.database` | a word; the database the slot reads |
 | `replication.slots.plugin` | a word; the decoding plugin |
 | `replication.slots.type` | a word; logical or physical |

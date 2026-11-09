@@ -135,6 +135,42 @@ func TestReplication_AStoppedConsumerLeavesReplicasAndStaysInSlots(t *testing.T)
 	assert.That(t, *after.RetainedBytes-*before.RetainedBytes >= written)
 }
 
+// A slot names the connection that holds it, so Control can tell which
+// tool holds the WAL. A role with no grants sees both names. Once the
+// consumer stops, the slot names nobody: the names were the connection's.
+func TestReplication_ASlotNamesTheConnectionThatHoldsIt(t *testing.T) {
+	ctx := context.Background()
+	slot(t, `SELECT pg_create_logical_replication_slot('held', 'test_decoding')`)
+	// Cleanups run last first, so a failed assertion stops the consumer
+	// before the slot is dropped: an active slot can't be.
+	t.Cleanup(func() {
+		admin(t, `SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name = 'held' AND active`)
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := container.Exec(ctx, []string{"pg_recvlogical", "-U", "admin",
+			"-d", "dbname=app application_name=fivetran",
+			"--slot", "held", "--start", "--no-loop", "-f", "/dev/null"}, tcexec.WithUser("postgres"))
+		done <- err
+	}()
+	eventually(t, "the consumer connects", func() bool {
+		r := replication(t, readerDSN)
+		return r != nil && slotNamed(t, r, "held").Active
+	})
+	s := slotNamed(t, replication(t, readerDSN), "held")
+	assert.Equal(t, "fivetran", s.ConsumerApplicationName)
+	assert.Equal(t, "admin", s.ConsumerUser)
+
+	admin(t, `SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name = 'held'`)
+	assert.NoError(t, <-done)
+	eventually(t, "the consumer leaves", func() bool {
+		return !slotNamed(t, replication(t, readerDSN), "held").Active
+	})
+	s = slotNamed(t, replication(t, readerDSN), "held")
+	assert.Equal(t, "", s.ConsumerApplicationName)
+	assert.Equal(t, "", s.ConsumerUser)
+}
+
 // A server with more slots than a report carries sends the ones holding
 // the most WAL, because those fill the disk first. The name decides nothing.
 func TestReplication_TheSlotsHoldingTheMostWALAreSent(t *testing.T) {
